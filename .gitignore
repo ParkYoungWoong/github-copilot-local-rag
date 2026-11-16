@@ -1,0 +1,4 @@
+.venv/
+indexes/
+evals/
+__pycache__/
