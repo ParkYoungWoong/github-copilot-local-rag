@@ -22,9 +22,10 @@ import urllib.request
 from pathlib import Path
 
 
-TOOL_VERSION = "2.0.0"
+TOOL_VERSION = "2.1.0"
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / "config.json"
+MODELS_FILE = ROOT / "models.json"
 # 시험할 때만 RAG_INDEX_DIR로 색인 위치를 바꾼다.
 INDEX_DIR = Path(os.environ["RAG_INDEX_DIR"]).expanduser().resolve() if os.environ.get("RAG_INDEX_DIR") else ROOT / "indexes"
 IS_WINDOWS = os.name == "nt"
@@ -42,7 +43,12 @@ AUTO_REFRESH_LIMIT_SECONDS = 20
 NAME_PATTERN = re.compile(r"^[a-z0-9가-힣-]+$")
 HEADING_PATTERN = re.compile(r"^(#{1,3})\s+(.+?)\s*#*\s*$")
 CONFIG_KEYS = ("embed_model", "ollama_url", "num_ctx", "keep_alive", "query_instruction", "embed_chunks_per_sec")
-INSTALL_HINT = "로컬 RAG 키트 폴더(local-rag 또는 github-copilot-local-rag-main)를 VS Code로 열고 Copilot에게 '설치해 줘'라고 요청하세요."
+INSTALL_HINT = ("로컬 RAG 키트 폴더(local-rag 또는 github-copilot-local-rag-main)를 AI 도구(VS Code의 Copilot, Claude Code 등)에서 "
+                "열고 '설치해 줘'라고 요청하세요.")
+# 컬렉션 이름의 프로젝트를 찾을 때 보는 표시(가장 가까운 상위 폴더의 것)
+PROJECT_MARKERS = (".git", ".github", ".vscode", ".agents", ".claude", ".idea", "AGENTS.md", "CLAUDE.md",
+                   "package.json", "pyproject.toml")
+NAME_BASE_LIMIT = 40
 
 
 class RagError(Exception):
@@ -180,6 +186,17 @@ def update_metadata(connection, key, value):
     connection.commit()
 
 
+def collection_model(name):
+    try:
+        connection = open_db(INDEX_DIR / f"{name}.db")
+    except (sqlite3.Error, RagError):
+        return None
+    try:
+        return db_metadata(connection).get("model")
+    finally:
+        connection.close()
+
+
 def collection_paths():
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     return sorted(path for path in INDEX_DIR.glob("*.db") if not path.name.startswith("."))
@@ -219,21 +236,46 @@ def find_collection_for_source(source):
     return None
 
 
+def project_root(source):
+    """문서 폴더를 가진 프로젝트 폴더(가장 가까운 상위 폴더 중 .git, AGENTS.md 같은 표시가 있는 곳). 없으면 None."""
+    source = Path(source)
+    stop = Path.home()
+    current = source
+    while True:
+        if path_key(current) == path_key(stop) or current.parent == current:
+            return None
+        if any((current / marker).exists() for marker in PROJECT_MARKERS):
+            return current
+        current = current.parent
+
+
+def name_base(source):
+    source = Path(source)
+    root = project_root(source)
+    if root is None:
+        parts = [source.parent.name, source.name]
+    elif path_key(root) == path_key(source):
+        parts = [source.name]
+    else:
+        parts = [root.name, *source.relative_to(root).parts]
+    base = "-".join(part for part in (sanitize_name(item) for item in parts) if part) or "docs"
+    if len(base) > NAME_BASE_LIMIT:
+        base = base[:NAME_BASE_LIMIT].rsplit("-", 1)[0] or base[:NAME_BASE_LIMIT]
+    return base
+
+
 def suggest_name(source):
-    """폴더 이름으로 컬렉션 이름을 정한다. 다른 폴더가 이미 쓰고 있으면 상위 폴더 이름을 앞에 붙인다."""
+    """'프로젝트-폴더-해시' 이름을 정한다. 해시는 폴더 경로로 만들어서, 이름이 같은 다른 프로젝트와 겹치지 않는다.
+    같은 폴더에는 언제나 같은 이름이 나온다."""
     source = Path(source)
     taken = {name: metadata.get("source", "") for name, metadata, _, _ in list_collections()}
-    base = sanitize_name(source.name) or "docs"
-    if base not in taken or path_key(taken[base]) == path_key(source):
-        return base
-    parent = sanitize_name(source.parent.name)
-    candidate = f"{parent}-{base}" if parent else base
-    number = 2
-    unique = candidate
-    while unique in taken and path_key(taken[unique]) != path_key(source):
-        unique = f"{candidate}-{number}"
-        number += 1
-    return unique
+    digest = hashlib.sha1(path_key(source).encode("utf-8")).hexdigest()
+    base = name_base(source)
+    for length in (4, 6, 8, 40):
+        candidate = f"{base}-{digest[:length]}"
+        if candidate not in taken or path_key(taken[candidate]) == path_key(source):
+            return candidate
+    return f"{base}-{digest}"
 
 
 def create_database(path, name, description, source, config, auto_refresh=True):
@@ -303,12 +345,39 @@ def normalize_stored_paths(connection):
     return len(odd)
 
 
-def ensure_model(metadata, config, rebuild=False):
-    if metadata.get("model") != config["embed_model"] and not rebuild:
-        raise RagError(
-            f"컬렉션 모델({metadata.get('model')})과 config.json 모델({config['embed_model']})이 다릅니다. "
-            f"`rag index --name {metadata.get('name')} --rebuild`로 다시 만드세요."
-        )
+def normalize_model(model):
+    """Ollama는 태그 없는 이름을 '<이름>:latest'로 저장한다."""
+    model = (model or "").strip()
+    return model if not model or ":" in model.rsplit("/", 1)[-1] else model + ":latest"
+
+
+def model_catalog():
+    try:
+        with MODELS_FILE.open(encoding="utf-8") as file:
+            return json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return {"default": "", "models": []}
+
+
+def model_profile(model):
+    """모델마다 질문과 문서를 임베딩하는 형식이 다르다. 목록에 없는 모델은 형식 없이 쓴다."""
+    for item in model_catalog().get("models", []):
+        if item.get("name") == model:
+            return item
+    return {"name": model, "query": "{question}", "document": "{title}\n{text}"}
+
+
+def fill(template, values):
+    return re.sub(r"\{(\w+)\}", lambda match: values.get(match.group(1), match.group(0)), template)
+
+
+def bind_model(config, model=None):
+    """config를 특정 모델용으로 바꾼 복사본. 속도는 모델별로 잰 값이 있으면 그 값을 쓴다."""
+    model = model or config["embed_model"]
+    speeds = config.get("model_speeds") or {}
+    speed = speeds.get(model) or (config["embed_chunks_per_sec"] if model == config["embed_model"] else
+                                  config["embed_chunks_per_sec"] * 0.8)
+    return dict(config, embed_model=model, embed_chunks_per_sec=speed)
 
 
 # ---------------------------------------------------------------------------
@@ -507,9 +576,11 @@ def document_chunks(text, relative):
     return output
 
 
-def embedding_text(relative, title, body):
+def embedding_text(relative, title, body, model=None):
     filename = nfc(relative.rsplit("/", 1)[-1])
-    return f"{filename} > {title}\n{body}" if title else f"{filename}\n{body}"
+    heading = f"{filename} > {title}" if title else filename
+    template = model_profile(model)["document"] if model else "{title}\n{text}"
+    return fill(template, {"title": heading, "text": body})
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +604,8 @@ def ollama_embed(config, texts):
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         if error.code == 404:
-            raise RagError(f"임베딩 모델 {config['embed_model']}이 Ollama에 없습니다. {INSTALL_HINT}") from error
+            raise RagError(f"임베딩 모델 {config['embed_model']}이 이 PC의 Ollama에 없습니다. "
+                           f"AI에게 '{config['embed_model']} 모델을 받아 줘'라고 요청하거나 `rag models`로 받을 수 있는 모델을 확인하세요.") from error
         raise RagError(f"Ollama가 오류를 돌려줬습니다({error.code}). 잠시 뒤 다시 시도하세요.") from error
     except (urllib.error.URLError, ConnectionError) as error:
         raise RagError("Ollama가 꺼져 있습니다. Windows는 시작 메뉴에서, macOS는 응용 프로그램 폴더에서 Ollama를 실행한 뒤 다시 시도하세요.") from error
@@ -551,9 +623,8 @@ def ollama_embed(config, texts):
 
 
 def query_vector(config, question):
-    instruction = config.get("query_instruction", "")
-    question = nfc(question)
-    text = f"Instruct: {instruction}\nQuery: {question}" if instruction else question
+    template = model_profile(config["embed_model"])["query"]
+    text = fill(template, {"instruction": config.get("query_instruction", ""), "question": nfc(question)})
     vectors, dimension = ollama_embed(config, [text])
     return vectors[0], dimension
 
@@ -661,7 +732,8 @@ def embed_record(config, record):
     vectors, dimension = [], None
     for offset in range(0, len(chunks), EMBED_BATCH_SIZE):
         batch = chunks[offset:offset + EMBED_BATCH_SIZE]
-        result, current = ollama_embed(config, [embedding_text(record["path"], title, body) for title, body in batch])
+        result, current = ollama_embed(config, [embedding_text(record["path"], title, body, config["embed_model"])
+                                                for title, body in batch])
         if dimension is not None and dimension != current:
             raise RagError("임베딩 차원이 요청마다 달라졌습니다.")
         dimension = current
@@ -673,6 +745,10 @@ def apply_plan(connection, config, plan, show_progress=True):
     """계획대로 저장한다. 파일 하나가 끝날 때마다 저장하므로 멈춰도 같은 명령으로 이어서 할 수 있다."""
     dimension = int(db_metadata(connection)["dimension"])
     done = 0
+    total = len(plan.changes)
+    interactive = sys.stderr.isatty()
+    shown = -1
+    started = time.time()
     for record in plan.changes:
         modified, chunks, vectors, current = embed_record(config, record)
         if chunks and current != dimension:
@@ -692,8 +768,15 @@ def apply_plan(connection, config, plan, show_progress=True):
             raise
         done += 1
         if show_progress:
-            print(f"\r처리한 파일: {done}/{len(plan.changes)}", end="", file=sys.stderr, flush=True)
-    if plan.changes and show_progress:
+            percent = done * 100 // total
+            bar = "#" * (percent // 5) + "-" * (20 - percent // 5)
+            line = f"[{bar}] {percent:3d}% 처리한 파일 {done}/{total} ({time.time() - started:.0f}초)"
+            if interactive:
+                print("\r" + line, end="", file=sys.stderr, flush=True)
+            elif percent // 10 != shown or done == total:
+                shown = percent // 10
+                print(line, file=sys.stderr, flush=True)
+    if plan.changes and show_progress and interactive:
         print(file=sys.stderr)
     if plan.restamps or plan.deletions:
         connection.execute("BEGIN")
@@ -770,6 +853,9 @@ def resolve_folder(text):
 
 def command_scan(args, config):
     root = resolve_folder(args.path)
+    existing = find_collection_for_source(root)
+    model = args.model or (collection_model(existing) if existing else config["embed_model"])
+    config = bind_model(config, model)
     excludes = split_values(args.exclude) or []
     records, skipped, _ = discover_files(root, parse_extensions(args.ext), excludes)
     chunk_count, total_size = 0, 0
@@ -783,8 +869,7 @@ def command_scan(args, config):
         total_size += record["size"]
     readable = sum(1 for record in records.values() if "text" in record)
     print(f"색인 대상: {readable}개 파일, {total_size:,}바이트, 예상 {chunk_count}개 조각")
-    print(f"예상 시간: {expected_seconds(config, chunk_count):.1f}초")
-    existing = find_collection_for_source(root)
+    print(f"예상 시간: {expected_seconds(config, chunk_count):.1f}초 (모델 {model})")
     if existing:
         print(f"이미 있는 컬렉션: {existing} (같은 폴더라 새로 만들지 않고 갱신합니다)")
     else:
@@ -804,6 +889,7 @@ def command_index_new(args, config):
         command_index_existing(args, config)
         return
     name = validate_name(args.name or suggest_name(source))
+    config = bind_model(config, args.model)
     db_path = INDEX_DIR / f"{name}.db"
     if db_path.exists():
         connection = open_db(db_path)
@@ -820,7 +906,7 @@ def command_index_new(args, config):
         excludes = split_values(args.exclude) or []
         update_metadata(connection, "extensions", ",".join(sorted(extensions)))
         update_metadata(connection, "excludes", json.dumps(excludes, ensure_ascii=False))
-        print(f"컬렉션 '{name}'을 만듭니다: {source}")
+        print(f"컬렉션 '{name}'을 만듭니다: {source} (모델 {config['embed_model']})")
         run_update(connection, config, name, source, extensions, excludes)
     finally:
         connection.close()
@@ -829,13 +915,15 @@ def command_index_new(args, config):
 def command_index_existing(args, config):
     path, connection, metadata = get_collection(args.name)
     try:
-        ensure_model(metadata, config, args.rebuild)
+        target = args.model or metadata.get("model") or config["embed_model"]
+        config = bind_model(config, target)
         if args.desc is not None and not args.dry_run:
             update_metadata(connection, "description", args.desc)
         if args.auto_refresh is not None and not args.dry_run:
             update_metadata(connection, "auto_refresh", args.auto_refresh)
         settings_only = (args.desc is not None or args.auto_refresh is not None) and not any(
-            (args.file, args.only, args.rebuild, args.prune, args.dry_run, args.ext is not None, args.exclude is not None, args.path))
+            (args.file, args.only, args.rebuild, args.prune, args.dry_run, args.ext is not None, args.exclude is not None, args.path,
+             args.model))
         if settings_only:
             print("설정을 바꿨습니다.")
             return
@@ -848,7 +936,8 @@ def command_index_existing(args, config):
             update_metadata(connection, "extensions", ",".join(sorted(extensions)))
             update_metadata(connection, "excludes", json.dumps(excludes, ensure_ascii=False))
         source = Path(metadata["source"])
-        if metadata.get("model") != config["embed_model"]:
+        if metadata.get("model") != target:
+            print(f"모델을 {metadata.get('model')}에서 {target}(으)로 바꿔 컬렉션 전체를 다시 만듭니다.")
             connection.close()
             connection = None
             rebuild_with_new_model(path, metadata, config, source, extensions, excludes, args)
@@ -989,7 +1078,7 @@ def refresh_before_search(connection, metadata, config, name, mode, notices):
 def search_collection(name, question, config, limit, mode, notices):
     _, connection, metadata = get_collection(name)
     try:
-        ensure_model(metadata, config)
+        config = bind_model(config, metadata.get("model"))
         refresh_before_search(connection, metadata, config, name, mode, notices)
         vector, dimension = query_vector(config, question)
         if dimension != int(metadata["dimension"]):
@@ -1019,7 +1108,12 @@ def command_search(args, config):
     mode = "refresh" if args.refresh else "no-refresh" if args.no_refresh else "auto"
     notices, results = [], []
     for name in names:
-        results.extend(search_collection(name, args.question, config, args.k, mode, notices))
+        try:
+            results.extend(search_collection(name, args.question, config, args.k, mode, notices))
+        except RagError as error:
+            if not args.all:
+                raise
+            notices.append(f"[{name}] 이 컬렉션은 건너뛰었습니다: {error}")
     results.sort(key=lambda item: item["similarity"], reverse=True)
     results = results[:args.k]
     for rank, item in enumerate(results, 1):
@@ -1063,6 +1157,48 @@ def command_list(args, _config):
               f"마지막 갱신 {item['updated_at'] or '없음'}{missing}")
 
 
+def ollama_model_names(config):
+    request = urllib.request.Request(config["ollama_url"].rstrip("/") + "/api/tags")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=5) as response:
+            return {item.get("name", "") for item in json.loads(response.read().decode("utf-8")).get("models", [])}
+    except Exception:
+        return None
+
+
+def command_models(args, config):
+    if args.add:
+        sys.path.insert(0, str(ROOT / "setup"))
+        import kit
+        return kit.main(["add-model", args.add] + (["--default"] if args.default else []))
+    catalog = model_catalog()
+    installed = ollama_model_names(config)
+    used = {}
+    for name, metadata, _, _ in list_collections():
+        used.setdefault(metadata.get("model", ""), []).append(name)
+    items = []
+    for item in catalog.get("models", []):
+        items.append({**{key: item.get(key) for key in ("name", "label", "maker", "country", "license", "size_mb", "note")},
+                      "default": item["name"] == config["embed_model"],
+                      "installed": None if installed is None else item["name"] in installed,
+                      "collections": used.get(item["name"], [])})
+    if args.json:
+        print(json.dumps({"default": config["embed_model"], "models": items}, ensure_ascii=False, indent=2))
+        return 0
+    if installed is None:
+        print("Ollama가 응답하지 않아 받은 모델인지는 확인하지 못했습니다.")
+    for item in items:
+        state = "받음" if item["installed"] else "안 받음" if item["installed"] is False else "확인 못 함"
+        mark = " (기본)" if item["default"] else ""
+        users = f" | 쓰는 컬렉션: {', '.join(item['collections'])}" if item["collections"] else ""
+        print(f"{item['name']}{mark} | {item['label']} | {item['maker']}({item['country']}) | {item['license']} | "
+              f"약 {item['size_mb']}MB | {state}{users}\n    {item['note']}")
+    print("\n새 컬렉션은 기본 모델로 만듭니다. 다른 모델로 만들려면 `rag index <폴더> --model <모델>`, "
+          "모델을 받으려면 `rag models --add <모델>`(기본으로 바꾸려면 --default)을 실행하세요.")
+    return 0
+
+
 def command_remove(args):
     path = INDEX_DIR / f"{validate_name(args.name)}.db"
     if not path.exists():
@@ -1091,6 +1227,7 @@ def build_parser():
     scan.add_argument("path")
     scan.add_argument("--ext")
     scan.add_argument("--exclude", action="append")
+    scan.add_argument("--model")
 
     index = commands.add_parser("index", parents=[common], help="컬렉션을 만들거나 갱신")
     index.add_argument("path", nargs="?")
@@ -1104,6 +1241,7 @@ def build_parser():
     index.add_argument("--prune", action="store_true")
     index.add_argument("--dry-run", action="store_true")
     index.add_argument("--auto-refresh", choices=("on", "off"))
+    index.add_argument("--model", help="임베딩 모델(새 컬렉션, 또는 기존 컬렉션을 다른 모델로 다시 만들 때)")
 
     search = commands.add_parser("search", parents=[common], help="질문과 가까운 조각 찾기")
     search.add_argument("question")
@@ -1129,16 +1267,37 @@ def build_parser():
     remove.add_argument("name")
     remove.add_argument("--yes", action="store_true")
 
+    models = commands.add_parser("models", parents=[common], help="쓸 수 있는 임베딩 모델과 받은 모델")
+    models.add_argument("--add", metavar="모델", help="모델을 받는다(반입 파일이 있으면 그것을 씀)")
+    models.add_argument("--default", action="store_true", help="--add와 함께 쓰면 기본 모델로 바꾼다")
+    models.add_argument("--json", action="store_true")
+
     commands.add_parser("check", parents=[common], help="이 PC의 설치 상태 점검")
     return parser
 
 
-def main(argv=None):
+def setup_output():
+    """Windows에서 출력을 파이프로 받는 프로그램(AI 도구의 터미널 등)은 UTF-8로 읽는다.
+    Python 3.14까지는 파이프 출력이 시스템 코드 페이지(한국어 Windows는 CP949)라 글자가 깨지므로 UTF-8로 맞춘다.
+    콘솔에 바로 쓸 때는 Windows가 유니코드로 처리하므로 그대로 둔다."""
     for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(errors="replace")
+        if not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            if IS_WINDOWS and not os.environ.get("PYTHONIOENCODING") and not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+            else:
+                stream.reconfigure(errors="replace", line_buffering=True)
+        except (ValueError, OSError):
+            pass
+
+
+def main(argv=None):
+    setup_output()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "model", None):
+        args.model = normalize_model(args.model)
     if getattr(args, "k", 1) < 1:
         parser.error("-k는 1 이상이어야 합니다.")
     try:
@@ -1148,6 +1307,8 @@ def main(argv=None):
         if args.command == "check":
             return command_check(args)
         config = load_config()
+        if args.command == "models":
+            return command_models(args, config)
         handlers = {"scan": command_scan, "index": command_index, "search": command_search,
                     "list": command_list, "move": command_move}
         handlers[args.command](args, config)

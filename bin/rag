@@ -6,7 +6,7 @@ if [ -x "$RAG_DIR/.venv/bin/python" ]; then
 elif [ -x "$RAG_DIR/.venv/Scripts/python.exe" ]; then
     PYTHON="$RAG_DIR/.venv/Scripts/python.exe"
 else
-    echo "[local-rag] 이 PC에는 아직 설치되지 않았거나 다른 PC에서 옮겨 온 폴더입니다. 키트 폴더를 VS Code로 열고 Copilot에게 '설치해 줘'라고 요청하세요." >&2
+    echo "[local-rag] 이 PC에는 아직 설치되지 않았거나 다른 PC에서 옮겨 온 폴더입니다. 키트 폴더를 AI 도구(VS Code의 Copilot, Claude Code 등)에서 열고 '설치해 줘'라고 요청하세요." >&2
     exit 1
 fi
 exec "$PYTHON" "$RAG_DIR/rag.py" "$@"

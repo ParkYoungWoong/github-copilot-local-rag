@@ -1,0 +1,41 @@
+{
+  "default": "qwen3-embedding:0.6b",
+  "models": [
+    {
+      "name": "qwen3-embedding:0.6b",
+      "label": "Qwen3 Embedding 0.6B",
+      "maker": "Alibaba",
+      "country": "중국",
+      "license": "Apache-2.0",
+      "size_mb": 639,
+      "dimension": 1024,
+      "note": "기본 모델입니다. 긴 문서(최대 32K 토큰)도 잘리지 않습니다.",
+      "query": "Instruct: {instruction}\nQuery: {question}",
+      "document": "{title}\n{text}"
+    },
+    {
+      "name": "embeddinggemma:300m",
+      "label": "EmbeddingGemma 300M",
+      "maker": "Google",
+      "country": "미국",
+      "license": "Gemma Terms of Use",
+      "size_mb": 622,
+      "dimension": 768,
+      "note": "중국 모델을 쓸 수 없을 때 먼저 고를 대안입니다. 키트의 한국어 시험에서 기본 모델과 비슷한 검색 품질에 3배쯤 빨랐습니다. 라이선스는 Gemma 이용 약관입니다.",
+      "query": "task: search result | query: {question}",
+      "document": "title: {title} | text: {text}"
+    },
+    {
+      "name": "snowflake-arctic-embed2:568m",
+      "label": "Snowflake Arctic Embed 2",
+      "maker": "Snowflake",
+      "country": "미국",
+      "license": "Apache-2.0",
+      "size_mb": 1200,
+      "dimension": 1024,
+      "note": "키트의 한국어 시험에서 기본 모델과 비슷한 검색 품질이었고 파일이 큽니다. 미국 Snowflake가 공개했지만 바탕 모델은 중국 BAAI의 bge-m3입니다.",
+      "query": "query: {question}",
+      "document": "{title}\n{text}"
+    }
+  ]
+}

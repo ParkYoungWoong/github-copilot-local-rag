@@ -11,3 +11,5 @@ offline/MANIFEST.json
 *.part
 ._*
 .DS_Store
+progress.html
+progress.html.tmp

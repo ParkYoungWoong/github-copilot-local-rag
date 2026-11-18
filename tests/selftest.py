@@ -7,12 +7,13 @@
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unicodedata
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 KIT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(KIT))
@@ -39,7 +40,7 @@ class Runner:
         self.env = dict(os.environ, RAG_INDEX_DIR=str(index_dir))
 
     def __call__(self, *args):
-        result = subprocess.run([str(LAUNCHER), *args], env=self.env, capture_output=True, text=True, errors="replace")
+        result = subprocess.run([str(LAUNCHER), *args], env=self.env, capture_output=True, encoding="utf-8", errors="replace")
         return result.returncode, result.stdout + result.stderr
 
     def json(self, *args):
@@ -78,10 +79,13 @@ def end_to_end(base):
         pass  # git이 없는 PC에서는 폴더를 직접 훑는 방식으로 시험한다.
 
     code, scan = run("scan", str(docs))
-    check("1. scan: 대상 3개, 제안 이름 docs-a, 숨은 파일(._, .DS_Store)은 세지 않음",
-          code == 0 and "색인 대상: 3개" in scan and "제안 이름: docs-a" in scan and "바이너리" not in scan, scan)
+    found = re.search(r"제안 이름: (\S+)", scan)
+    name = found.group(1) if found else "?"
+    check("1. scan: 대상 3개, 제안 이름은 '상위 폴더-폴더-해시', 숨은 파일(._, .DS_Store)은 세지 않음",
+          code == 0 and "색인 대상: 3개" in scan and re.fullmatch(r"[a-z0-9가-힣-]*docs-a-[0-9a-f]{4}", name) is not None
+          and "바이너리" not in scan, scan)
     code, output = run("index", str(docs), "--desc", "시험 문서", "--auto-refresh", "on")
-    item = collection(run, "docs-a")
+    item = collection(run, name)
     check("2. 새 폴더 index에 --desc, --auto-refresh를 함께 줘도 만들어짐",
           code == 0 and item and item["description"] == "시험 문서" and item["files"] == 3, output)
     estimate = int(scan.split("예상 ")[1].split("개")[0]) if "예상 " in scan else -1
@@ -89,11 +93,11 @@ def end_to_end(base):
           f"예상 {estimate}, 실제 {item and item['chunks']}")
     answers = {"출장 가면 하루에 얼마 받아?": "출장 규정.md", "신입 사원 연차는 며칠이야?": "휴가 안내.md",
                "센서 교정은 언제 해?": "장비 점검.md"}
-    got = {question: top_file(run, question, "docs-a") for question in answers}
+    got = {question: top_file(run, question, name) for question in answers}
     check("4. 질문마다 맞는 한글 파일이 1위(NFD로 만든 파일 이름도 NFC로 저장)",
           all(got[q] == a for q, a in answers.items()) and all(unicodedata.is_normalized("NFC", p or "") for p in got.values()),
           json.dumps(got, ensure_ascii=False))
-    data = run.json("search", "센서 교정 주기", "--name", "docs-a", "-k", "5")
+    data = run.json("search", "센서 교정 주기", "--name", name, "-k", "5")
     titles = [result["title"] for result in (data or {}).get("results", [])]
     check("5. 코드 블록 안의 # 줄은 제목으로 보지 않음", data is not None and "이 줄은 제목이 아닙니다" not in " ".join(titles), str(titles))
     check("6. --json 결과에 순위, 유사도, 파일 전체 경로, 안내 문구가 있음",
@@ -102,28 +106,28 @@ def end_to_end(base):
 
     write(docs / "출장 규정.md", "# 출장 규정\n\n국내 출장 일비는 하루 5만 원으로 올랐습니다. 출장 신청은 출발 3일 전까지 합니다.\n")
     (docs / "장비 점검.md").unlink()
-    code, output = run("search", "출장 일비는 얼마야?", "--name", "docs-a", "-k", "3")
+    code, output = run("search", "출장 일비는 얼마야?", "--name", name, "-k", "3")
     check("7. 내용을 바꾸고 하나를 지우면 검색할 때 반영됨",
           code == 0 and "5만 원" in output and "장비 점검.md" not in output and "자동 갱신: 1개 파일, 지운 파일 1개" in output, output)
 
     moved = docs.parent / "docs-a-옮김"
     docs.rename(moved)
-    code, output = run("index", "--name", "docs-a")
-    item = collection(run, "docs-a")
+    code, output = run("index", "--name", name)
+    item = collection(run, name)
     check("8. 원본 폴더가 없으면 아무것도 지우지 않고 rag move를 안내", item and item["files"] == 2 and "rag move" in output, output)
-    code, output = run("search", "연차", "--name", "docs-a", "-k", "1")
+    code, output = run("search", "연차", "--name", name, "-k", "1")
     check("9. 원본 폴더가 없어도 기존 색인으로 검색하고 rag move를 안내", code == 0 and "휴가 안내.md" in output and "rag move" in output, output)
     other = base / "다른 폴더"
     write(other / "메모.md", "# 메모\n\n회의실 예약은 사내 포털에서 합니다.\n")
-    code, output = run("index", str(other), "--name", "docs-a")
+    code, output = run("index", str(other), "--name", name)
     check("10. 같은 이름을 다른 폴더에 쓰면 거부하고 rag move와 다른 이름을 안내",
-          code != 0 and "rag move docs-a" in output and "--name" in output, output)
-    code, preview = run("move", "docs-a", str(moved))
-    still = collection(run, "docs-a")
+          code != 0 and f"rag move {name}" in output and "--name" in output, output)
+    code, preview = run("move", name, str(moved))
+    still = collection(run, name)
     check("11. rag move를 --yes 없이 실행하면 미리보기만 함",
           code == 0 and "내용이 같은 파일 2개" in preview and still and Path(still["source"]).name == "docs-a", preview)
-    code, output = run("move", "docs-a", str(moved), "--yes")
-    code2, dry = run("index", "--name", "docs-a", "--dry-run")
+    code, output = run("move", name, str(moved), "--yes")
+    code2, dry = run("index", "--name", name, "--dry-run")
     check("12. rag move --yes 뒤에는 다시 임베딩할 파일도 지울 파일도 없음",
           code == 0 and "다시 임베딩할 파일: 0개" in dry and "지울 파일: 0개" in dry, output + dry)
 
@@ -133,17 +137,17 @@ def end_to_end(base):
             target = nfd_copy / unicodedata.normalize("NFD", path.name)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, target)
-    code, output = run("move", "docs-a", str(nfd_copy), "--yes")
-    code2, dry = run("index", "--name", "docs-a", "--dry-run")
-    code3, update = run("index", "--name", "docs-a")
-    item = collection(run, "docs-a")
+    code, output = run("move", name, str(nfd_copy), "--yes")
+    code2, dry = run("index", "--name", name, "--dry-run")
+    code3, update = run("index", "--name", name)
+    item = collection(run, name)
     check("13. 파일 이름이 NFD로 바뀐 사본으로 옮겨도 중복 없이 그대로 씀",
           "내용이 같은 파일 2개" in output and "다시 임베딩할 파일: 0개" in dry and item and item["files"] == 2, output + dry + update)
 
-    code, output = run("search", "출장 \"일비\" 100% 얼마?", "--name", "docs-a", "-k", "1")
+    code, output = run("search", "출장 \"일비\" 100% 얼마?", "--name", name, "-k", "1")
     check("14. 한글, 공백, 따옴표, %가 든 질문", code == 0 and "출장 규정.md" in output, output)
     write(nfd_copy / "이모지.md", "# 이모지\n\n축하 메시지에는 🎉 이모지를 씁니다.\n")
-    code, output = run("search", "축하 메시지", "--name", "docs-a", "-k", "1")
+    code, output = run("search", "축하 메시지", "--name", name, "-k", "1")
     check("15. CP949에 없는 글자가 든 문서를 파이프로 출력해도 멈추지 않음", code == 0 and "이모지.md" in output, output)
 
     def existing(name):
@@ -153,22 +157,22 @@ def end_to_end(base):
 
     write(existing("출장 규정.md"), "# 출장 규정\n\n국내 출장 일비는 하루 6만 원입니다.\n")
     write(existing("이모지.md"), "# 이모지\n\n축하 메시지에는 박수 이모지를 씁니다.\n")
-    code, only = run("index", "--name", "docs-a", "--only", "출장*", "--dry-run")
-    code2, single = run("index", "--name", "docs-a", "--file", "이모지.md")
-    code3, after = run("index", "--name", "docs-a", "--dry-run")
+    code, only = run("index", "--name", name, "--only", "출장*", "--dry-run")
+    code2, single = run("index", "--name", name, "--file", "이모지.md")
+    code3, after = run("index", "--name", name, "--dry-run")
     check("16. --only는 패턴에 맞는 파일만, --file은 지정한 파일만, --dry-run은 저장하지 않음",
           "다시 임베딩할 파일: 1개" in only and "다시 임베딩한 파일: 1개" in single and "다시 임베딩할 파일: 1개" in after,
           only + single + after)
-    run("index", "--name", "docs-a", "--auto-refresh", "off")
-    code, output = run("search", "출장 일비", "--name", "docs-a", "-k", "1")
+    run("index", "--name", name, "--auto-refresh", "off")
+    code, output = run("search", "출장 일비", "--name", name, "-k", "1")
     check("17. 자동 갱신을 끄면 갱신하지 않고 안내만 함", "자동 갱신이 꺼져 있어" in output and "6만 원" not in output, output)
-    code, output = run("remove", "docs-a")
-    check("18. remove를 --yes 없이 실행하면 지우지 않음", collection(run, "docs-a") is not None, output)
-    code, output = run("remove", "docs-a", "--yes")
-    check("19. remove --yes는 색인만 지우고 원본은 그대로", collection(run, "docs-a") is None and (nfd_copy / "출장 규정.md").exists(), output)
+    code, output = run("remove", name)
+    check("18. remove를 --yes 없이 실행하면 지우지 않음", collection(run, name) is not None, output)
+    code, output = run("remove", name, "--yes")
+    check("19. remove --yes는 색인만 지우고 원본은 그대로", collection(run, name) is None and existing("출장 규정.md").exists(), output)
 
 
-def pure_checks():
+def pure_checks(base):
     raw = "%USERPROFILE%\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Old\\local-rag\\bin;C:\\Tools"
     value = kit.windows_path_value(raw, "D:\\local-rag\\bin", ["C:\\Old\\local-rag\\bin"])
     again = kit.windows_path_value(value, "D:\\local-rag\\bin", ["C:\\Old\\local-rag\\bin"])
@@ -187,9 +191,9 @@ def pure_checks():
     check("23. Windows 드라이브 구분(외장 드라이브 판단)",
           kit.windows_drive("E:\\local-rag") == "e:" and kit.windows_drive("\\\\nas\\team\\docs") == "\\\\nas\\team"
           and kit.windows_drive("C:\\Users\\a") != kit.windows_drive("E:\\local-rag"))
-    block = kit.shell_block(Path("/Users/a/내 폴더/it's"))
+    block = kit.shell_block(PurePosixPath("/Users/a/내 폴더/it's"))
     text = kit.text_with_block("export A=1\n", block)
-    replaced = kit.text_with_block(text, kit.shell_block(Path("/Users/a/new")))
+    replaced = kit.text_with_block(text, kit.shell_block(PurePosixPath("/Users/a/new")))
     check("24. 셸 설정 파일 묶음: 붙이기, 바꾸기, 지우기, 공백과 작은따옴표가 든 경로",
           text.count(kit.BLOCK_START) == 1 and "'/Users/a/내 폴더/it'\"'\"'s'" in text and "/Users/a/new" in replaced
           and replaced.count(kit.BLOCK_START) == 1 and kit.text_with_block(replaced, "") == "export A=1\n\n", text)
@@ -205,22 +209,64 @@ def pure_checks():
     empty = kit.jsonc_loads(kit.settings_with_rules(""))
     plain = kit.jsonc_loads(kit.settings_with_rules('{"a": 1}'))
     check("26. 빈 설정 파일과 규칙이 없는 설정에도 넣음",
-          len(empty["chat.tools.terminal.autoApprove"]) == 3 and plain["a"] == 1 and len(plain["chat.tools.terminal.autoApprove"]) == 3)
+          len(empty["chat.tools.terminal.autoApprove"]) == len(kit.APPROVE_RULES) and plain["a"] == 1
+          and len(plain["chat.tools.terminal.autoApprove"]) == len(kit.APPROVE_RULES))
     names = [path.name for path in (KIT / "offline" / "wheels").glob("*.whl") if not path.name.startswith("._")]
     expected = [("windows", "amd64"), ("mac", "arm64"), ("mac", "x86_64"), ("linux", "x86_64"), ("linux", "aarch64")]
     picked = {pair: [name for name in names if kit.wheel_tag_matches(name, *pair)] for pair in expected}
     check("27. 반입용 sqlite-vec 파일이 운영체제마다 정확히 하나씩 있음", all(len(found) == 1 for found in picked.values()),
           json.dumps({f"{a}-{b}": c for (a, b), c in picked.items()}, ensure_ascii=False))
 
+    project = base / "내 프로젝트"
+    (project / ".git").mkdir(parents=True)
+    (project / "docs" / "규정").mkdir(parents=True)
+    other_project = base / "다른 곳" / "내 프로젝트"
+    (other_project / "AGENTS.md").parent.mkdir(parents=True)
+    (other_project / "AGENTS.md").write_text("# 안내\n", encoding="utf-8")
+    (other_project / "docs").mkdir()
+    first, again = rag.suggest_name(project / "docs"), rag.suggest_name(project / "docs")
+    second, nested = rag.suggest_name(other_project / "docs"), rag.suggest_name(project / "docs" / "규정")
+    check("28. 컬렉션 이름: 프로젝트-폴더-해시, 같은 폴더는 같은 이름, 이름이 같은 다른 프로젝트와 겹치지 않음",
+          re.fullmatch(r"내-프로젝트-docs-[0-9a-f]{4}", first) is not None and first == again and second != first
+          and second.startswith("내-프로젝트-docs-") and re.fullmatch(r"내-프로젝트-docs-규정-[0-9a-f]{4}", nested) is not None,
+          f"{first} {second} {nested}")
+    gemma = rag.embedding_text("출장 규정.md", "일비", "하루 3만 원 {text}", "embeddinggemma:300m")
+    qwen = rag.embedding_text("출장 규정.md", "일비", "하루 3만 원", "qwen3-embedding:0.6b")
+    query = rag.fill(rag.model_profile("embeddinggemma:300m")["query"], {"question": "일비는?"})
+    unknown = rag.model_profile("some-model:latest")
+    check("29. 모델마다 문서, 질문 형식(목록에 없는 모델은 형식 없이), 본문의 중괄호는 그대로",
+          gemma == "title: 출장 규정.md > 일비 | text: 하루 3만 원 {text}" and qwen == "출장 규정.md > 일비\n하루 3만 원"
+          and query == "task: search result | query: 일비는?" and unknown["query"] == "{question}", f"{gemma!r} {qwen!r} {query!r}")
+    block, inside = [], False
+    for line in (KIT / "bin" / "rag.cmd").read_text(encoding="utf-8").splitlines():
+        if line.strip().endswith("("):
+            inside = True
+            continue
+        if inside and line.strip() == ")":
+            inside = False
+            continue
+        if inside:
+            block.append(line)
+    check("30. rag.cmd의 if 묶음 안에 괄호가 없음(괄호가 있으면 Windows에서 모든 rag 명령이 문법 오류로 멈춤)",
+          block and not any("(" in line or ")" in line for line in block), "\n".join(block))
+    section = kit.machine_section(PureWindowsPath("C:/Users/학생/local-rag") if os.name == "nt" else Path("/Users/a/local-rag"))
+    check("31. 설치한 스킬에 붙이는 이 PC의 rag 실행 파일 절(전체 경로, 키트 폴더)",
+          kit.MACHINE_HEADING in section and "키트 폴더: `" in section and ("rag.cmd" in section if os.name == "nt" else "/bin/rag" in section),
+          section)
+
 
 def main():
+    if os.name == "nt":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure") and not os.environ.get("PYTHONIOENCODING") and not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace")
     only_pure = "--pure" in sys.argv
     print("local-rag 자체 시험", flush=True)
     base = Path(tempfile.mkdtemp(prefix="local-rag-selftest-"))
     try:
         if not only_pure:
             end_to_end(base)
-        pure_checks()
+        pure_checks(base)
     finally:
         shutil.rmtree(base, ignore_errors=True)
     failed = RESULTS.count(False)
