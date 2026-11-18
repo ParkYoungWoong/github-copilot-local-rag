@@ -57,7 +57,7 @@ GitHub Copilot(VS Code, Copilot CLI), Claude Code, Codex처럼 스킬과 `AGENTS
 | 모델 | 만든 곳 | 크기 | 메모 |
 | --- | --- | --- | --- |
 | `qwen3-embedding:0.6b` | Alibaba(중국) | 약 640MB | 기본. 긴 문서도 잘리지 않음 |
-| `embeddinggemma:300m` | Google(미국) | 약 620MB | 중국 모델 대신 먼저 고를 대안. 검색 품질이 기본과 비슷하고 3배쯤 빠름. 라이선스는 Gemma 이용 약관 |
+| `embeddinggemma:300m` | Google(미국) | 약 620MB | 중국 모델 대신 먼저 고를 대안. 검색 품질이 기본과 비슷함. 라이선스는 Gemma 이용 약관 |
 | `snowflake-arctic-embed2:568m` | Snowflake(미국) | 약 1.2GB | 검색 품질이 기본과 비슷함. 바탕 모델은 중국 BAAI의 bge-m3 |
 
 검색 품질은 한국어 문서 18개와 질문 43개로 잰 결과입니다. 컬렉션은 만들 때 쓴 모델로 검색하므로, 컬렉션마다 모델이 달라도 됩니다.

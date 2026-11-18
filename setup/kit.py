@@ -868,8 +868,20 @@ def skill_content(source, kit=KIT):
     return data
 
 
+def is_junction(path):
+    """Windows 디렉터리 연결(junction). Python 3.12 전에는 Path.is_junction이 없어 속성으로 본다."""
+    if not IS_WINDOWS:
+        return False
+    if hasattr(path, "is_junction"):
+        return path.is_junction()
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400) and not path.is_symlink()
+    except OSError:
+        return False
+
+
 def is_link(path):
-    return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)())
+    return path.is_symlink() or is_junction(path)
 
 
 def remove_link(path):
@@ -1021,10 +1033,45 @@ def shim_file(folder=None):
     return None if folder is None else folder / ("rag.cmd" if IS_WINDOWS else "rag")
 
 
+ALIAS_NAME = "local-rag-kit"
+
+
+def kit_alias():
+    """키트 경로에 한글이 있을 때 쓰는 영문 이름의 디렉터리 연결(%LOCALAPPDATA%\\local-rag-kit)."""
+    return Path(os.environ.get("LOCALAPPDATA", str(home() / "AppData" / "Local"))) / ALIAS_NAME
+
+
+def needs_alias(kit=KIT):
+    """배치 파일은 콘솔 코드 페이지로 읽혀서, AI 도구가 콘솔을 UTF-8(65001)로 바꾸면 CP949로 쓴 한글 경로를 찾지 못한다.
+    그래서 키트 경로에 영문이 아닌 글자가 있으면 실행 파일에는 영문 이름의 연결만 적는다."""
+    return IS_WINDOWS and not str(kit).isascii()
+
+
+def alias_ok(kit=KIT):
+    alias = kit_alias()
+    try:
+        return is_link(alias) and os.path.samefile(alias, kit)
+    except OSError:
+        return False
+
+
+def make_alias(kit=KIT):
+    alias = kit_alias()
+    if alias_ok(kit):
+        return True
+    if is_link(alias):
+        remove_link(alias)
+    elif alias.exists():
+        return False
+    result = subprocess.run(["cmd", "/d", "/c", "mklink", "/J", str(alias), str(kit)], capture_output=True)
+    return result.returncode == 0 and alias_ok(kit)
+
+
 def shim_text(kit=KIT):
     if IS_WINDOWS:
+        target = f"%LOCALAPPDATA%\\{ALIAS_NAME}\\bin\\rag.cmd" if needs_alias(kit) else str(launcher(kit))
         return (f"@echo off\r\nrem {SHIM_MARK}: runs bin\\rag.cmd of the local-rag kit folder.\r\n"
-                f"\"{launcher(kit)}\" %*\r\n")
+                f"\"{target}\" %*\r\n")
     return f"#!/bin/sh\n# {SHIM_MARK}: runs bin/rag of the local-rag kit folder.\nexec {shell_quote(str(launcher(kit)))} \"$@\"\n"
 
 
@@ -1069,13 +1116,16 @@ def shim_state(kit=KIT):
         return "없음", path
     if not is_our_shim(path):
         return "다른 파일 있음", path
-    return ("최신" if path.read_bytes() == shim_bytes(kit) and bash_shim_ok(path.parent, kit) else "옛 버전"), path
+    current = path.read_bytes() == shim_bytes(kit) and bash_shim_ok(path.parent, kit) and (not needs_alias(kit) or alias_ok(kit))
+    return ("최신" if current else "옛 버전"), path
 
 
 def install_shim(kit=KIT):
     state, path = shim_state(kit)
     if state in ("쓸 폴더 없음", "다른 파일 있음"):
         return None
+    if needs_alias(kit) and not make_alias(kit):
+        return None  # 연결을 만들지 못하면 실행 파일을 두지 않고, 스킬에 적은 전체 경로로 실행하게 한다.
     data = shim_bytes(kit)
     if data is None:
         return None
@@ -1101,6 +1151,9 @@ def remove_shim():
             if path and is_our_shim(path) and str(path) not in removed:
                 path.unlink()
                 removed.append(str(path))
+    if IS_WINDOWS and is_link(kit_alias()):
+        remove_link(kit_alias())  # 연결만 지우고 키트 폴더의 내용은 그대로 둔다.
+        removed.append(str(kit_alias()))
     return removed
 
 
@@ -1624,9 +1677,15 @@ def claude_settings_file():
     return home() / ".claude" / "settings.json"
 
 
+def claude_installed():
+    """Claude Code를 쓰는 PC인지. ~/.claude 폴더는 스킬을 넣을 때 키트가 만들 수도 있어 그것만으로는 판단하지 않는다."""
+    return ((home() / ".claude.json").exists() or claude_settings_file().exists()
+            or bool(shutil.which("claude")) or (home() / ".claude" / "projects").is_dir())
+
+
 def claude_rules_state():
     path = claude_settings_file()
-    if not path.parent.is_dir():
+    if not claude_installed():
         return "Claude Code 없음"
     data = load_json(path, {}) if path.exists() else {}
     if not isinstance(data, dict):
@@ -1635,9 +1694,9 @@ def claude_rules_state():
     return "있음" if all(rule in allowed for rule in CLAUDE_RULES) else "없음"
 
 
-def install_claude_rules():
+def install_claude_rules(installed=None):
     path = claude_settings_file()
-    if not path.parent.is_dir():
+    if not (claude_installed() if installed is None else installed):
         return None
     if path.exists():
         try:
@@ -1883,6 +1942,7 @@ def command_install(args):
 
 def install_steps(args, model):
     previous = previous_kits()  # PATH와 스킬을 새 폴더로 바꾸기 전에 예전 키트 폴더를 기억해 둔다.
+    claude = claude_installed()  # 스킬 단계가 ~/.claude를 만들기 전에 판단한다(계획과 같게).
     start(0)
     version = venv_state() or make_venv()
     finish(f"sqlite-vec {version}")
@@ -1930,9 +1990,9 @@ def install_steps(args, model):
             for rule, value in APPROVE_RULES:
                 say(f"    {json.dumps(rule)}: {json.dumps(value)}")
         try:
-            claude = install_claude_rules()
-            if claude:
-                note(f"Claude Code: {claude}")
+            claude_path = install_claude_rules(claude)
+            if claude_path:
+                note(f"Claude Code: {claude_path}")
         except KitError as error:
             note(str(error))
     finish()

@@ -21,7 +21,7 @@
       "license": "Gemma Terms of Use",
       "size_mb": 622,
       "dimension": 768,
-      "note": "중국 모델을 쓸 수 없을 때 먼저 고를 대안입니다. 키트의 한국어 시험에서 기본 모델과 비슷한 검색 품질에 3배쯤 빨랐습니다. 라이선스는 Gemma 이용 약관입니다.",
+      "note": "중국 모델을 쓸 수 없을 때 먼저 고를 대안입니다. 키트의 한국어 시험에서 기본 모델과 비슷한 검색 품질이었습니다. 속도는 PC에 따라 다릅니다. 라이선스는 Gemma 이용 약관입니다.",
       "query": "task: search result | query: {question}",
       "document": "title: {title} | text: {text}"
     },

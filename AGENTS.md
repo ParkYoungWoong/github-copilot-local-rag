@@ -80,7 +80,7 @@ GitHub Copilot, Claude Code, Codex 등 어느 AI 도구에서 열어도 이 문�
 | 모델 | 만든 곳 | 특징 |
 | --- | --- | --- |
 | `qwen3-embedding:0.6b` | Alibaba(중국) | 기본. 긴 문서도 잘리지 않음(약 640MB) |
-| `embeddinggemma:300m` | Google(미국) | 중국 모델을 쓸 수 없을 때 먼저 고를 대안. 한국어 검색 품질이 기본과 비슷하고 3배쯤 빠름(약 620MB, Gemma 이용 약관) |
+| `embeddinggemma:300m` | Google(미국) | 중국 모델을 쓸 수 없을 때 먼저 고를 대안. 한국어 검색 품질이 기본과 비슷함(약 620MB, Gemma 이용 약관) |
 | `snowflake-arctic-embed2:568m` | Snowflake(미국) | 검색 품질이 기본과 비슷, 파일이 큼(약 1.2GB). 바탕 모델은 중국 BAAI의 bge-m3 |
 
 검색 품질은 키트의 한국어 문서 18개, 질문 43개로 잰 결과입니다. 회사 규정이 모델을 만든 곳만 보는지, 바탕 모델까지 보는지에 따라 고르세요.
