@@ -311,7 +311,7 @@ def python_problem(executable=None):
     try:
         if not hasattr(connection, "enable_load_extension"):
             if IS_MAC:
-                return ("이 Python은 SQLite 확장 불러오기를 지원하지 않습니다(macOS 기본 Python). "
+                return ("이 Python은 SQLite 확장 불러오기를 지원하지 않습니다(macOS 기본 Python이나 일부 설치 도구로 만든 Python). "
                         "Homebrew나 python.org의 Python으로 다시 실행하세요.")
             return "이 Python은 SQLite 확장 불러오기를 지원하지 않습니다. python.org의 Python으로 다시 실행하세요."
     finally:
