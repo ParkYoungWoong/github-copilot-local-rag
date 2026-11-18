@@ -674,7 +674,15 @@ def ensure_model(model):
         if wait_for(lambda: model in (ollama_models() or []), 30):
             return "반입 파일에서 복사"
         raise KitError("모델 파일을 복사했지만 Ollama가 모델을 찾지 못했습니다. Ollama 앱을 종료했다가 다시 실행한 뒤 다시 요청하세요.")
-    pull_model(model)
+    try:
+        pull_model(model)
+    except KitError as error:
+        if "모델 저장소에" in str(error):  # 이름이 틀림
+            raise
+        # 회사 프록시처럼 Ollama는 못 쓰고 키트(시스템 프록시 설정을 따름)는 쓰는 망: 키트가 직접 받아 반입 파일처럼 넣는다.
+        note(f"Ollama가 모델을 받지 못해 키트가 직접 받습니다({error}).")
+        download_model_from_registry(OFFLINE / "models", model)
+        return ensure_model(model) + "(키트가 직접 받음)"
     if model not in (ollama_models() or []):
         raise KitError(f"{model} 모델을 받지 못했습니다. 회사 망이면 인터넷이 되는 PC에서 '반입 준비해 줘'로 받은 폴더를 가져오세요.")
     return "인터넷에서 받음"
