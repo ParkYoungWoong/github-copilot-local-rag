@@ -68,7 +68,7 @@ GitHub Copilot, Claude Code, Codex 등 어느 AI 도구에서 열어도 이 문�
 
 1. 키트 폴더에 `.git` 폴더가 있으면(git clone으로 받은 경우) `git -C "<키트 폴더>" pull --ff-only`를 실행합니다.
    - 성공하면 [설치](#설치)를 1번부터 다시 진행합니다. 같은 폴더라 가상 환경과 색인은 그대로 쓰고, 스킬과 실행 파일만 새것으로 바뀝니다.
-   - "local changes" 같은 오류로 실패하면 `git status --short`로 바뀐 파일을 보여 주고, 그 변경을 잠시 치워 둬도 되는지 물어봅니다. 확인을 받으면 `git -C "<키트 폴더>" stash` 뒤에 다시 pull합니다. 사용자가 직접 고친 파일이 아니면 대부분 이 경우입니다.
+   - "local changes" 같은 오류로 실패하면 `git status --short`로 바뀐 파일을 보여 주고, 그 변경을 잠시 치워 둬도 되는지 물어봅니다. 확인을 받으면 `git -C "<키트 폴더>" stash` 뒤에 다시 pull합니다. 치워 둔 변경은 지워지지 않고 남아 있으며, 필요하면 `git stash pop`으로 되돌릴 수 있다고 알립니다.
 2. `.git` 폴더가 없으면(ZIP으로 받은 경우) 새 ZIP을 받아 홈 폴더에 지금 폴더와 다른 이름으로 풉니다. 주소는 `https://github.com/ParkYoungWoong/github-copilot-local-rag/archive/refs/heads/main.zip`이고, Windows는 `curl.exe -L -o`와 `Expand-Archive`, macOS는 `curl -L -o`와 `unzip`을 씁니다.
    - 압축을 푼 폴더의 `setup/kit.py`로 [설치](#설치)를 1번부터 진행합니다. 예전 키트 폴더의 색인은 설치할 때 새 폴더로 가져옵니다.
    - 끝나면 예전 키트 폴더는 지워도 된다고 알립니다. 지우는 것은 사용자가 원할 때만 합니다.
