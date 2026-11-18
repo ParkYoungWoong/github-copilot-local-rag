@@ -68,7 +68,7 @@ DOWNLOADS = {
     "linux": [],
 }
 # 반입할 때 함께 옮기지 않는 것(PC마다 새로 만드는 것)
-COPY_SKIP = {".venv", "__pycache__", ".git", "backup", "config.json", "progress.html"}
+COPY_SKIP = {".venv", "__pycache__", ".git", "backup", "config.json", "progress.html", ".jobs"}
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
 INSTALL_STEPS = ["가상 환경과 sqlite-vec", "Ollama", "임베딩 모델", "config.json과 속도 측정", "rag 명령 등록",
                  "AI 도구 스킬", "자동 승인 규칙", "이전 키트 폴더의 색인", "자체 시험"]
@@ -448,6 +448,32 @@ def start_ollama_server(app):
     return True
 
 
+def ollama_log_tail(lines=6):
+    """Ollama가 켜지지 않을 때 원인을 볼 수 있게 서버 기록의 마지막 몇 줄을 돌려준다."""
+    folder = home() / ".ollama" / "logs"
+    if IS_WINDOWS:
+        folder = Path(os.environ.get("LOCALAPPDATA", "")) / "Ollama"
+    found = []
+    for name in ("local-rag-serve.log", "server.log", "app.log"):
+        for path in (folder / name, home() / ".ollama" / "logs" / name):
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+            except OSError:
+                continue
+            if text:
+                found.append(f"[{path}] " + " / ".join(line.strip() for line in text[-lines:]))
+            break
+    return " ".join(found)
+
+
+def ollama_failed(action):
+    """Ollama를 켜지 못했을 때의 오류. AI가 원인을 보고 다음 일을 고를 수 있게 기록을 함께 보여 준다."""
+    tail = ollama_log_tail()
+    return KitError(f"Ollama가 응답하지 않습니다({action}). 같은 요청을 한 번 더 해 보고, 그래도 안 되면 PC를 다시 시작한 뒤 "
+                    "다시 요청하세요. 보안 프로그램이 Ollama를 막는다면 회사 IT 담당자에게 문의해야 합니다."
+                    + (f" Ollama 기록: {tail}" if tail else ""))
+
+
 def bring_up_ollama(app, seconds):
     """Ollama 앱을 실행하고 응답할 때까지 기다린다. 앱이 응답하지 않으면 서버를 바로 실행한다."""
     start_ollama_app(app)
@@ -455,10 +481,9 @@ def bring_up_ollama(app, seconds):
     if wait_for(ollama_running, 60 if IS_MAC else seconds):
         return True
     if start_ollama_server(app):
-        where = "응용 프로그램 폴더" if IS_MAC else "시작 메뉴"
         reason = "확인 창에서 멈춰 있어" if IS_MAC else "응답하지 않아"
         note(f"Ollama 앱이 {reason} 앱 대신 Ollama 서버를 바로 실행했습니다. "
-             f"PC를 다시 켠 뒤에는 {where}에서 Ollama를 한 번 실행하세요.")
+             "PC를 다시 켠 뒤 Ollama가 꺼져 있으면 rag가 쓸 때 다시 켭니다.")
         return wait_for(ollama_running, 30)
     return False
 
@@ -503,7 +528,7 @@ def install_ollama():
     if app is None:
         raise KitError("Ollama를 설치했지만 앱을 찾지 못했습니다. 직접 설치 파일을 실행한 뒤 다시 요청하세요.")
     if not wait_for(ollama_running, 20) and not bring_up_ollama(app, 90):
-        raise KitError("Ollama 앱이 응답하지 않습니다. Windows는 시작 메뉴, macOS는 응용 프로그램에서 Ollama를 실행한 뒤 다시 요청하세요.")
+        raise ollama_failed("설치 직후")
 
 
 def windows_registry_value(name):
@@ -720,17 +745,29 @@ def measure_speed(config, model):
     """한글 문단 16개를 한 번에 임베딩해서 이 PC의 초당 조각 수를 잰다."""
     paragraph = ("사내 문서 검색 속도를 재기 위한 시험 문단입니다. 장비 점검 기준과 보고 절차, 담당자 배정 규칙을 설명합니다. " * 12)[:900]
     payload = {"model": model, "keep_alive": config["keep_alive"], "options": {"num_ctx": config["num_ctx"]}}
-    try:
-        with local_request("/api/embed", dict(payload, input=["준비"]), timeout=300) as response:
-            dimension = len(json.loads(response.read().decode("utf-8"))["embeddings"][0])
-        started = time.time()
-        with local_request("/api/embed", dict(payload, input=[paragraph] * 16), timeout=600) as response:
-            json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        raise KitError(f"{model} 모델로 임베딩하지 못했습니다(Ollama 오류 {error.code}). 임베딩 모델이 맞는지, 받아 둔 모델인지 확인하세요.") from error
-    except (urllib.error.URLError, OSError, KeyError, IndexError, ValueError) as error:
-        raise KitError(f"{model} 모델로 속도를 재지 못했습니다({error}). Ollama가 켜져 있는지 확인하세요.") from error
-    return round(16 / max(time.time() - started, 0.001), 3), dimension
+    for attempt in range(3):
+        try:
+            with local_request("/api/embed", dict(payload, input=["준비"]), timeout=300) as response:
+                dimension = len(json.loads(response.read().decode("utf-8"))["embeddings"][0])
+            started = time.time()
+            with local_request("/api/embed", dict(payload, input=[paragraph] * 16), timeout=600) as response:
+                json.loads(response.read().decode("utf-8"))
+            return round(16 / max(time.time() - started, 0.001), 3), dimension
+        except urllib.error.HTTPError as error:
+            try:
+                detail = error.read().decode("utf-8", errors="replace")[:300]
+            except OSError:
+                detail = ""
+            if attempt < 2:
+                # 막 받은 모델은 처음 불러올 때 실패하기도 한다. 잠깐 뒤 다시 한다.
+                note(f"Ollama가 오류 {error.code}를 돌려줘 10초 뒤 다시 잽니다. {detail}")
+                time.sleep(10)
+                continue
+            raise KitError(f"{model} 모델로 임베딩하지 못했습니다(Ollama 오류 {error.code}: {detail}). "
+                           "같은 요청을 다시 해 보고, 같은 오류면 Ollama 기록을 확인하세요."
+                           + (f" Ollama 기록: {ollama_log_tail()}" if ollama_log_tail() else "")) from error
+        except (urllib.error.URLError, OSError, KeyError, IndexError, ValueError) as error:
+            raise KitError(f"{model} 모델로 속도를 재지 못했습니다({error}). Ollama가 켜져 있는지 확인하세요.") from error
 
 
 def write_config(model=None, measure=()):
@@ -1547,7 +1584,7 @@ def copy_tree(source, destination, with_indexes=False, targets=None):
         dirs[:] = [name for name in dirs if not is_junk(name) and not (relative_dir == Path(".") and name in COPY_SKIP)
                    and not (relative_dir == Path(".") and name == "indexes" and not with_indexes)
                    and not (relative_dir.parts[:1] == ("offline",) and len(relative_dir.parts) == 2 and name in skip_os)
-                   and name != "__pycache__"]
+                   and name not in ("__pycache__", ".jobs")]
         for name in files:
             if is_junk(name) or name.endswith(".part") or (relative_dir == Path(".") and name in COPY_SKIP):
                 continue
@@ -1864,8 +1901,9 @@ def check_items():
         "" if config else "'설치해 줘'로 만듭니다.")
     running = ollama_running()
     add("Ollama", bool(running), f"{ollama_url()} 응답, 버전 {running}" if running else f"{ollama_url()} 응답 없음",
-        "" if running else ("Ollama 앱을 실행하세요(Windows는 시작 메뉴, macOS는 응용 프로그램)." if find_ollama_app()
-                            else "'설치해 줘'로 Ollama를 설치합니다."))
+        "" if running else ("Ollama를 켜지 못했습니다. PC를 다시 시작한 뒤 다시 점검하고, 그래도 안 되면 보안 프로그램이 "
+                            "Ollama를 막는지 IT 담당자에게 확인하세요." + (f" Ollama 기록: {ollama_log_tail()}" if ollama_log_tail() else "")
+                            if find_ollama_app() else "'설치해 줘'로 Ollama를 설치합니다."))
     models = ollama_models() if running else None
     wanted = [default_model()] + [model for model in collection_models() if model != default_model()]
     for model in wanted:
@@ -1874,7 +1912,7 @@ def check_items():
         add(f"임베딩 모델 {model}", has_model if running else None,
             ("있음" if has_model else "없음" if running else "(Ollama 확인 뒤)") + (" (기본)" if model == default_model() else "")
             + (f", 쓰는 컬렉션 {len(users)}개" if users else ""),
-            "" if has_model else f"AI에게 '{model} 모델을 받아 줘'라고 요청하세요(`rag models --add {model}`).")
+            "" if has_model else f"`rag models --add {model}`로 받습니다.")
     configured = path_configured()
     shim, shim_path = shim_state()
     on_path = shutil.which("rag")
@@ -1900,8 +1938,20 @@ def check_items():
     return items
 
 
+def install_healthy():
+    """설치 결과를 다시 보여 줘도 되는지. 점검에 실패가 하나라도 있으면(지웠거나 스킬이 옛것 등) 다시 설치한다."""
+    try:
+        return all(ok is not False for _, ok, _, _ in check_items())
+    except Exception:
+        return False
+
+
 def command_check(_args=None):
     say(f"local-rag 점검 ({current_os()}, {platform.machine()}, Python {python_machine()})")
+    app = find_ollama_app()
+    if app and not ollama_running():
+        say("Ollama가 꺼져 있어 켭니다(1분쯤 걸릴 수 있음).")
+        bring_up_ollama(app, 40)
     failed = False
     for name, ok, detail, fix in check_items():
         label = "통과" if ok is True else "확인 필요" if ok is None else "실패"
@@ -2009,7 +2059,7 @@ def install_steps(args, model):
         if app:
             note("Ollama 앱을 실행합니다.")
             if not bring_up_ollama(app, 60):
-                raise KitError("Ollama 앱이 응답하지 않습니다. 앱을 직접 실행한 뒤 다시 요청하세요.")
+                raise ollama_failed("앱을 실행한 뒤")
         else:
             install_ollama()
     finish(f"버전 {ollama_running()}")
@@ -2059,8 +2109,11 @@ def install_steps(args, model):
     finish(f"{len(copied)}개" if copied else "가져올 색인 없음")
     start(8)
     note("자체 시험 중입니다(1분 안팎).")
-    result = subprocess.run([str(venv_python()), str(KIT / "tests" / "selftest.py")])
-    if result.returncode != 0:
+    process = subprocess.Popen([str(venv_python()), str(KIT / "tests" / "selftest.py")], stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, encoding="utf-8", errors="replace")
+    for line in process.stdout:
+        say(line.rstrip("\n"))
+    if process.wait() != 0:
         raise KitError("설치한 항목은 그대로 두었지만 자체 시험 중 실패한 항목이 있습니다. 위의 [실패] 줄을 그대로 알려 주세요.")
     finish("모두 통과")
     end(True, "설치를 마쳤습니다.")
@@ -2084,7 +2137,7 @@ def command_add_model(args):
         if not app:
             raise KitError("Ollama가 없습니다. 키트 폴더에서 '설치해 줘'로 먼저 설치하세요.")
         if not bring_up_ollama(app, 60):
-            raise KitError("Ollama 앱이 응답하지 않습니다. 앱을 직접 실행한 뒤 다시 요청하세요.")
+            raise ollama_failed("앱을 실행한 뒤")
     if not catalog_entry(model):
         say(f"참고: {model}은 models.json 목록에 없는 모델입니다. 질문과 문서 형식 없이 씁니다.")
     say(f"{model_label(model)}: {ensure_model(model)}")
@@ -2121,6 +2174,7 @@ def command_uninstall(args):
             "Ollama, 모델, 이 폴더의 색인, 자동 승인 규칙은 그대로 둡니다.")
         say("지우려면 --yes를 붙이세요.")
         return 0
+    (KIT / ".jobs" / "kit.json").unlink(missing_ok=True)  # 지운 뒤 다시 설치하면 예전 설치 결과를 쓰지 않게
     say(f"rag 명령 등록 해제: {configure_path(remove_only=True)}")
     for path in remove_shim():
         say(f"바로 쓰는 실행 파일을 지웠습니다: {path}")
@@ -2166,17 +2220,38 @@ def main(argv=None):
     handlers = {"check": command_check, "install": command_install, "prepare": command_prepare, "pack": command_pack,
                 "copy-to": command_copy_to, "uninstall": command_uninstall, "add-model": command_add_model,
                 "models": command_models}
-    try:
-        return handlers[args.command](args)
-    except KitError as error:
-        say(f"오류: {error}")
-        return 1
-    except subprocess.CalledProcessError as error:
-        say(f"오류: 명령이 실패했습니다({error.cmd[0] if error.cmd else ''}, 종료 코드 {error.returncode}).")
-        return 1
-    except KeyboardInterrupt:
-        say("중단했습니다. 같은 요청을 다시 하면 이어서 진행합니다.")
-        return 130
+
+    def execute():
+        try:
+            return handlers[args.command](args)
+        except KitError as error:
+            say(f"오류: {error}")
+            return 1
+        except subprocess.CalledProcessError as error:
+            say(f"오류: 명령이 실패했습니다({error.cmd[0] if error.cmd else ''}, 종료 코드 {error.returncode}).")
+            return 1
+        except KeyboardInterrupt:
+            say("중단했습니다. 같은 요청을 다시 하면 이어서 진행합니다.")
+            return 130
+
+    titles = {"install": "로컬 RAG 설치", "add-model": "임베딩 모델 받기", "prepare": "반입 재료 받기",
+              "pack": "반입 준비", "copy-to": "키트 폴더 복사"}
+    long_running = args.command in titles and (args.command != "install" or args.yes)
+    if long_running and not os.environ.get("RAG_NO_JOB"):
+        import joblock
+        # 키트 파일이 바뀌면(업데이트) 다른 작업으로 본다. 그래야 업데이트 직후의 설치가 예전 결과로 끝나지 않는다.
+        stamps = []
+        for path in (Path(__file__), KIT / "rag.py", SKILL_SOURCE / "SKILL.md", MODELS_FILE):
+            try:
+                stat = path.stat()
+                stamps.append(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+            except OSError:
+                stamps.append(f"{path.name}:-")
+        signature = json.dumps([sorted((key, str(value)) for key, value in vars(args).items()), stamps], ensure_ascii=False)
+        # 설치는 다시 하면 속도 측정과 자체 시험을 또 하므로, 10분 안에 성공으로 끝났으면 그 결과를 보여 준다.
+        return joblock.run(KIT / ".jobs", "kit", signature, titles[args.command], execute,
+                           reuse_seconds=600 if args.command == "install" else 0, reuse_ok=install_healthy)
+    return execute()
 
 
 if __name__ == "__main__":

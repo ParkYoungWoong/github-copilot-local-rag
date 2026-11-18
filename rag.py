@@ -6,6 +6,7 @@ Python 표준 라이브러리와 sqlite-vec만 사용하며, 임베딩은 이 PC
 사용법은 USAGE.md를 본다.
 """
 import argparse
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -18,6 +19,7 @@ import sys
 import time
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -28,6 +30,7 @@ CONFIG_FILE = ROOT / "config.json"
 MODELS_FILE = ROOT / "models.json"
 # 시험할 때만 RAG_INDEX_DIR로 색인 위치를 바꾼다.
 INDEX_DIR = Path(os.environ["RAG_INDEX_DIR"]).expanduser().resolve() if os.environ.get("RAG_INDEX_DIR") else ROOT / "indexes"
+JOB_DIR = INDEX_DIR / ".jobs"  # 색인 작업의 잠금과 진행 기록(setup/joblock.py)
 IS_WINDOWS = os.name == "nt"
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", "out", "coverage"}
@@ -41,6 +44,7 @@ MAX_CHUNK_SIZE = 1000
 EMBED_BATCH_SIZE = 16
 # 자체 시험만 RAG_AUTO_REFRESH_LIMIT로 한도를 바꾼다(느린 PC에서도 같은 결과가 나오도록).
 AUTO_REFRESH_LIMIT_SECONDS = int(os.environ.get("RAG_AUTO_REFRESH_LIMIT") or 20)
+TEST_DELAY_SECONDS = float(os.environ.get("RAG_TEST_DELAY") or 0)  # 자체 시험에서 색인을 일부러 느리게 할 때만
 NAME_PATTERN = re.compile(r"^[a-z0-9가-힣-]+$")
 HEADING_PATTERN = re.compile(r"^(#{1,3})\s+(.+?)\s*#*\s*$")
 CONFIG_KEYS = ("embed_model", "ollama_url", "num_ctx", "keep_alive", "query_instruction", "embed_chunks_per_sec")
@@ -50,6 +54,10 @@ INSTALL_HINT = ("로컬 RAG 키트 폴더(local-rag 또는 github-copilot-local-
 PROJECT_MARKERS = (".git", ".github", ".vscode", ".agents", ".claude", ".idea", "AGENTS.md", "CLAUDE.md",
                    "package.json", "pyproject.toml")
 NAME_BASE_LIMIT = 40
+
+
+sys.path.insert(0, str(ROOT / "setup"))
+import joblock  # noqa: E402
 
 
 class RagError(Exception):
@@ -207,9 +215,15 @@ def get_collection(name):
     validate_name(name)
     path = INDEX_DIR / f"{name}.db"
     if not path.is_file():
+        if joblock.is_running(JOB_DIR, name):
+            raise RagError(f"컬렉션 '{name}'을 지금 만들기 시작했습니다. 몇 초 뒤 같은 명령을 다시 실행하세요.")
         raise RagError(f"컬렉션 '{name}'이 없습니다. `rag list`로 이름을 확인하거나 `rag index <폴더>`로 먼저 만드세요.")
     connection = open_db(path)
-    return path, connection, db_metadata(connection)
+    metadata = db_metadata(connection)
+    if "dimension" not in metadata:
+        connection.close()
+        raise RagError(f"컬렉션 '{name}'은 만들다 멈춘 상태입니다. `rag remove {name} --yes`로 지운 뒤 다시 만드세요.")
+    return path, connection, metadata
 
 
 def list_collections():
@@ -284,7 +298,10 @@ def create_database(path, name, description, source, config, auto_refresh=True):
     if path.exists():
         raise RagError(f"컬렉션 DB가 이미 있습니다: {path}")
     _, dimension = ollama_embed(config, ["초기 벡터 차원 확인"])
-    connection = open_db(path)
+    # 다른 이름으로 다 만든 뒤 바꿔 넣는다. 만드는 중에 검색하거나 목록을 봐도 반쯤 만든 DB가 보이지 않게 한다.
+    temporary = path.with_name(f".{path.stem}-new.db")
+    remove_db_files(temporary)
+    connection = open_db(temporary)
     try:
         connection.executescript(
             "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
@@ -305,11 +322,23 @@ def create_database(path, name, description, source, config, auto_refresh=True):
         }
         connection.executemany("INSERT INTO metadata(key, value) VALUES(?, ?)", metadata.items())
         connection.commit()
-        return connection
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        connection.close()
+        for suffix in ("-wal", "-shm"):
+            Path(str(temporary) + suffix).unlink(missing_ok=True)
+        for attempt in range(20):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.25)  # Windows 보안 프로그램이 새 파일을 잠깐 잡고 있을 때
     except BaseException:
         connection.close()
-        remove_db_files(path)
+        remove_db_files(temporary)
         raise
+    return open_db(path)
 
 
 def remove_db_files(path):
@@ -588,7 +617,27 @@ def embedding_text(relative, title, body, model=None):
 # Ollama
 # ---------------------------------------------------------------------------
 
-def ollama_embed(config, texts):
+OLLAMA_STARTED = []
+
+
+def start_ollama(config):
+    """Ollama가 꺼져 있으면 켠다(앱, 응답이 없으면 서버). 한 번만 시도하고, 안내는 표준 오류로 쓴다(--json 출력 보호)."""
+    if OLLAMA_STARTED:
+        return False
+    OLLAMA_STARTED.append(True)
+    host = urllib.parse.urlparse(config["ollama_url"]).hostname or ""
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return False
+    import kit
+    app = kit.find_ollama_app()
+    if app is None:
+        raise RagError("이 PC에 Ollama가 없습니다. 로컬 RAG 키트 폴더를 AI 도구에서 열고 '설치해 줘'라고 요청하세요.")
+    print("Ollama가 꺼져 있어 켭니다(1분쯤 걸릴 수 있음).", file=sys.stderr, flush=True)
+    with contextlib.redirect_stdout(sys.stderr):
+        return bool(kit.bring_up_ollama(app, 40))
+
+
+def ollama_embed(config, texts, retry=True):
     request = urllib.request.Request(
         config["ollama_url"].rstrip("/") + "/api/embed",
         data=json.dumps({
@@ -606,10 +655,12 @@ def ollama_embed(config, texts):
     except urllib.error.HTTPError as error:
         if error.code == 404:
             raise RagError(f"임베딩 모델 {config['embed_model']}이 이 PC의 Ollama에 없습니다. "
-                           f"AI에게 '{config['embed_model']} 모델을 받아 줘'라고 요청하거나 `rag models`로 받을 수 있는 모델을 확인하세요.") from error
+                           f"`rag models --add {config['embed_model']}`로 받은 뒤 같은 명령을 다시 실행하세요.") from error
         raise RagError(f"Ollama가 오류를 돌려줬습니다({error.code}). 잠시 뒤 다시 시도하세요.") from error
     except (urllib.error.URLError, ConnectionError) as error:
-        raise RagError("Ollama가 꺼져 있습니다. Windows는 시작 메뉴에서, macOS는 응용 프로그램 폴더에서 Ollama를 실행한 뒤 다시 시도하세요.") from error
+        if retry and start_ollama(config):
+            return ollama_embed(config, texts, retry=False)
+        raise RagError("Ollama가 꺼져 있고 켜지도 못했습니다. `rag check`를 실행해 Ollama 항목의 다음에 할 일을 확인하세요.") from error
     except (TimeoutError, json.JSONDecodeError) as error:
         raise RagError(f"Ollama 응답을 처리하지 못했습니다: {error}") from error
     vectors = payload.get("embeddings")
@@ -727,7 +778,7 @@ def delete_file_rows(connection, relative):
     connection.execute("DELETE FROM files WHERE path=?", (relative,))
 
 
-def embed_record(config, record):
+def embed_record(config, record, on_batch=None):
     modified = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record["mtime_ns"] / 1e9))
     chunks = document_chunks(record["text"], record["path"])
     vectors, dimension = [], None
@@ -739,19 +790,53 @@ def embed_record(config, record):
             raise RagError("임베딩 차원이 요청마다 달라졌습니다.")
         dimension = current
         vectors.extend(result)
+        if on_batch:
+            on_batch(len(batch))
     return modified, chunks, vectors, dimension
+
+
+class Progress:
+    """색인 진행 상황. 화면(터미널)에서는 한 줄을 고쳐 쓰고, AI 도구처럼 파이프로 읽으면 10%마다 또는 15초마다 한 줄씩 쓴다."""
+
+    def __init__(self, files, chunks, enabled=True):
+        self.files, self.chunks, self.enabled = files, max(chunks, 1), enabled
+        self.done_files = self.done_chunks = 0
+        self.started = self.printed_at = time.time()
+        self.bucket = -1
+        self.interactive = sys.stderr.isatty()
+
+    def add(self, chunks=0, files=0):
+        self.done_chunks += chunks
+        self.done_files += files
+        if not self.enabled:
+            return
+        percent = min(self.done_chunks * 100 // self.chunks, 100)
+        elapsed = time.time() - self.started
+        left = ""
+        if 0 < self.done_chunks < self.chunks and elapsed >= 5:
+            left = f", 남은 시간 약 {joblock.duration(elapsed / self.done_chunks * (self.chunks - self.done_chunks))}"
+        bar = "#" * (percent // 5) + "-" * (20 - percent // 5)
+        line = (f"[{bar}] {percent:3d}% 조각 {min(self.done_chunks, self.chunks)}/{self.chunks}, "
+                f"파일 {self.done_files}/{self.files}, 경과 {joblock.duration(elapsed)}{left}")
+        if self.interactive:
+            print("\r" + line + "   ", end="", file=sys.stderr, flush=True)
+        elif percent // 10 != self.bucket or time.time() - self.printed_at >= 15 or self.done_files == self.files:
+            self.bucket = percent // 10
+            self.printed_at = time.time()
+            print(line, file=sys.stderr, flush=True)
+
+    def close(self):
+        if self.enabled and self.interactive and self.files:
+            print(file=sys.stderr)
 
 
 def apply_plan(connection, config, plan, show_progress=True):
     """계획대로 저장한다. 파일 하나가 끝날 때마다 저장하므로 멈춰도 같은 명령으로 이어서 할 수 있다."""
     dimension = int(db_metadata(connection)["dimension"])
     done = 0
-    total = len(plan.changes)
-    interactive = sys.stderr.isatty()
-    shown = -1
-    started = time.time()
+    progress = Progress(len(plan.changes), plan.chunk_count() if plan.changes else 0, show_progress and bool(plan.changes))
     for record in plan.changes:
-        modified, chunks, vectors, current = embed_record(config, record)
+        modified, chunks, vectors, current = embed_record(config, record, progress.add)
         if chunks and current != dimension:
             raise RagError("임베딩 벡터 차원이 컬렉션과 다릅니다. 모델을 확인하고 --rebuild로 다시 만드세요.")
         connection.execute("BEGIN")
@@ -768,17 +853,10 @@ def apply_plan(connection, config, plan, show_progress=True):
             connection.rollback()
             raise
         done += 1
-        if show_progress:
-            percent = done * 100 // total
-            bar = "#" * (percent // 5) + "-" * (20 - percent // 5)
-            line = f"[{bar}] {percent:3d}% 처리한 파일 {done}/{total} ({time.time() - started:.0f}초)"
-            if interactive:
-                print("\r" + line, end="", file=sys.stderr, flush=True)
-            elif percent // 10 != shown or done == total:
-                shown = percent // 10
-                print(line, file=sys.stderr, flush=True)
-    if plan.changes and show_progress and interactive:
-        print(file=sys.stderr)
+        progress.add(files=1)
+        if TEST_DELAY_SECONDS:
+            time.sleep(TEST_DELAY_SECONDS)
+    progress.close()
     if plan.restamps or plan.deletions:
         connection.execute("BEGIN")
         try:
@@ -825,6 +903,9 @@ def run_update(connection, config, name, root, extensions, excludes, only=None, 
     done = apply_plan(connection, config, plan)
     print(f"다시 임베딩한 파일: {done}개, 지운 파일: {len(plan.deletions)}개")
     print_skipped(plan.skipped)
+    files = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    chunks_total = connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    print(f"컬렉션 '{name}': 파일 {files}개, 조각 {chunks_total}개(모델 {config['embed_model']})")
     return done
 
 
@@ -1052,6 +1133,10 @@ def refresh_before_search(connection, metadata, config, name, mode, notices):
     if mode == "auto" and metadata.get("auto_refresh", "on") != "on":
         notices.append(f"[{name}] 자동 갱신이 꺼져 있어 기존 색인으로 검색합니다.")
         return
+    if joblock.is_running(JOB_DIR, name):
+        notices.append(f"[{name}] 지금 이 컬렉션을 색인하는 중이라 지금까지 만든 색인으로 검색합니다. "
+                       f"색인이 끝난 뒤 다시 검색하면 나머지 문서에서도 찾습니다.")
+        return
     root = Path(metadata.get("source", ""))
     if not root.is_dir():
         notices.append(f"[{name}] 원본 폴더를 찾을 수 없어 기존 색인으로 검색합니다: {root}. "
@@ -1068,8 +1153,8 @@ def refresh_before_search(connection, metadata, config, name, mode, notices):
         plan.changes = []
         plan.deletions = []
         apply_plan(connection, config, plan, show_progress=False)
-        notices.append(f"[{name}] 갱신 예상 시간이 {AUTO_REFRESH_LIMIT_SECONDS}초를 넘어 기존 색인으로 검색합니다. "
-                       f"`rag index --name {name}`으로 갱신하세요.")
+        notices.append(f"[{name}] 바뀐 문서가 많아(갱신 예상 {seconds:.0f}초) 갱신하지 않고 기존 색인으로 검색했습니다. "
+                       f"`rag index --name {name}`을 실행한 뒤 다시 검색하면 바뀐 내용으로 찾습니다.")
         return
     done = apply_plan(connection, config, plan, show_progress=False)
     deleted = f", 지운 파일 {len(plan.deletions)}개" if plan.deletions else ""
@@ -1293,6 +1378,24 @@ def setup_output():
             pass
 
 
+def index_job_key(args):
+    """같은 컬렉션의 색인이 겹치지 않게 잠글 이름. 알 수 없으면 None(잠그지 않고 실행해 오류를 그대로 보여 줌)."""
+    try:
+        if args.path:
+            source = resolve_folder(args.path)
+            return find_collection_for_source(source) or validate_name(args.name or suggest_name(source))
+        return validate_name(args.name) if args.name else None
+    except Exception:
+        return None
+
+
+def job_signature(args):
+    data = {key: value for key, value in vars(args).items() if key != "debug"}
+    if data.get("path"):
+        data["path"] = path_key(Path(data["path"]).expanduser().resolve())
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+
+
 def main(argv=None):
     setup_output()
     parser = build_parser()
@@ -1301,6 +1404,14 @@ def main(argv=None):
         args.model = normalize_model(args.model)
     if getattr(args, "k", 1) < 1:
         parser.error("-k는 1 이상이어야 합니다.")
+    if args.command == "index" and not args.dry_run and not os.environ.get("RAG_NO_JOB"):
+        key = index_job_key(args)
+        if key:
+            return joblock.run(JOB_DIR, key, job_signature(args), f"컬렉션 '{key}' 색인", lambda: run_command(args))
+    return run_command(args)
+
+
+def run_command(args):
     try:
         if args.command == "remove":
             command_remove(args)

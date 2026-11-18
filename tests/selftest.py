@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -173,6 +175,80 @@ def end_to_end(base):
     check("19. remove --yes는 색인만 지우고 원본은 그대로", collection(run, name) is None and existing("출장 규정.md").exists(), output)
 
 
+def job_checks(base):
+    """AI 도구가 기다리다 먼저 돌아와 같은 색인을 다시 실행하거나, 색인하던 프로세스가 꺼진 경우."""
+    import joblock
+    index_dir = base / "job-indexes"
+    run = Runner(index_dir)
+    env = dict(run.env, RAG_TEST_DELAY="1.5")
+    docs = base / "작업 시험" / "docs"
+    for number, topic in enumerate(["회의실", "주차", "택배", "식당"]):
+        write(docs / f"{topic}.md", f"# {topic} 안내\n\n{topic} 이용 시간은 오전 {number + 8}시부터입니다.\n")
+    python, script = str(kit.venv_python()), str(KIT / "rag.py")
+
+    other = base / "작업 시험" / "docs-kill"
+    for path in docs.iterdir():
+        write(other / path.name, path.read_text(encoding="utf-8"))
+
+    def start(name, folder=docs):
+        return subprocess.Popen([python, script, "index", str(folder), "--name", name], env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace")
+
+    def wait_until(condition, seconds=120):
+        end = time.time() + seconds
+        while time.time() < end and not condition():
+            time.sleep(0.2)
+        return condition()
+
+    def kill(process):
+        if os.name == "nt":  # 가상 환경의 python.exe는 실제 Python을 자식으로 띄우므로 함께 끈다.
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+        else:
+            process.kill()
+        process.wait()
+
+    jobs = index_dir / ".jobs"
+    first = start("job-test")
+    ready = wait_until(lambda: joblock.is_running(jobs, "job-test") and (index_dir / "job-test.db").exists())
+    code, searched = run("search", "주차 시간", "--name", "job-test", "-k", "1")
+    still = joblock.is_running(jobs, "job-test")
+    second = subprocess.run([python, script, "index", str(docs), "--name", "job-test"], env=env, capture_output=True,
+                            encoding="utf-8", errors="replace")
+    out1 = first.communicate()[0]
+    out2 = second.stdout + second.stderr
+    item = collection(run, "job-test")
+    check("32. 색인 중에 검색하면 기다리지 않고 지금까지 만든 색인으로 찾고 그렇다고 알림",
+          ready and code == 0 and ("색인하는 중이라" in searched or not still), searched)
+    # 두 번째가 늦게 떠서 앞 작업이 이미 끝났으면 그냥 갱신(바뀐 파일 0개)으로 끝나는 것도 맞는 동작이다.
+    check("33. 같은 색인을 겹쳐 실행하면 두 번째는 진행 중인 작업에 이어 붙어 결과를 보여 주고, 조각이 두 번 들어가지 않음",
+          first.returncode == 0 and second.returncode == 0 and joblock.END_MARK in out2
+          and ("진행 중입니다" in out2 or "다시 임베딩한 파일: 0개" in out2)
+          and item is not None and item["files"] == 4 and item["chunks"] == 4, out1 + "\n---\n" + out2)
+
+    slow = dict(env, RAG_TEST_DELAY="3")
+    holder = subprocess.Popen([python, script, "index", str(other), "--name", "job-kill"], env=slow,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", errors="replace")
+    wait_until(lambda: joblock.is_running(jobs, "job-kill"))
+    follower = subprocess.Popen([python, script, "index", str(other), "--name", "job-kill"], env=slow,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", errors="replace")
+    lines = []
+    reader = threading.Thread(target=lambda: lines.extend(follower.stdout), daemon=True)
+    reader.start()
+    attached = wait_until(lambda: any("진행 중입니다" in line for line in lines) or follower.poll() is not None)
+    attached = attached and any("진행 중입니다" in line for line in lines) and holder.poll() is None
+    if attached:
+        kill(holder)
+    else:
+        holder.wait()
+    follower.wait()
+    reader.join(10)
+    out = "".join(lines)
+    item = collection(run, "job-kill")
+    check("34. 색인하던 프로세스가 꺼지면, 이어 붙어 있던 쪽이 이어서 끝까지 함",
+          follower.returncode == 0 and (not attached or "이어서 진행합니다" in out) and item is not None
+          and item["files"] == 4 and item["chunks"] == 4, out)
+
+
 def pure_checks(base):
     raw = "%USERPROFILE%\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Old\\local-rag\\bin;C:\\Tools"
     value = kit.windows_path_value(raw, "D:\\local-rag\\bin", ["C:\\Old\\local-rag\\bin"])
@@ -267,6 +343,7 @@ def main():
     try:
         if not only_pure:
             end_to_end(base)
+            job_checks(base)
         pure_checks(base)
     finally:
         shutil.rmtree(base, ignore_errors=True)

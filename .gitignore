@@ -13,3 +13,4 @@ offline/MANIFEST.json
 .DS_Store
 progress.html
 progress.html.tmp
+.jobs/
