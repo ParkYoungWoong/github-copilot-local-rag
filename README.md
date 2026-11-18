@@ -119,6 +119,7 @@ GitHub Copilot(VS Code, Copilot CLI), Claude Code, Codex처럼 스킬과 `AGENTS
 
 - 폴더는 OneDrive, iCloud Drive 같은 동기화 폴더나 다른 프로젝트 폴더 안에 두지 않습니다. 설치할 때 AI가 위치를 먼저 확인합니다.
 - 키트 폴더를 옮겼거나 다른 PC에서 가져왔다면, 옮긴 폴더를 열고 다시 `설치해 줘`라고 요청합니다.
+- VS Code에서 Copilot 하네스 대신 Local 하네스를 쓰면, 처음 `rag`를 실행할 때 승인 창이 뜹니다. 승인 창의 `...` 메뉴에서 `Enable Auto Approve...`를 한 번 켜 두면 검색과 목록은 다음부터 묻지 않습니다(VS Code가 처음 한 번만 직접 확인받는 설정입니다).
 - 검색으로 찾은 조각은 AI 대화에 포함되어 그 AI 서비스의 서버로 전달됩니다. AI 서비스에 보내면 안 되는 문서는 RAG로 만들지 않습니다.
 - 지금은 `.md`, `.markdown`, `.txt` 파일만 읽습니다. Word나 PDF 문서는 마크다운으로 변환한 뒤 RAG로 만듭니다.
 
