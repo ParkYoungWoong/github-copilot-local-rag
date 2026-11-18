@@ -1126,6 +1126,8 @@ def install_shim(kit=KIT):
         return None
     if needs_alias(kit) and not make_alias(kit):
         return None  # 연결을 만들지 못하면 실행 파일을 두지 않고, 스킬에 적은 전체 경로로 실행하게 한다.
+    if IS_WINDOWS and not needs_alias(kit) and is_link(kit_alias()):
+        remove_link(kit_alias())  # 예전 한글 경로 키트에 쓰던 연결은 이제 필요 없다.
     data = shim_bytes(kit)
     if data is None:
         return None
