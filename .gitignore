@@ -1,4 +1,13 @@
 .venv/
 indexes/
 evals/
+backup/
 __pycache__/
+config.json
+offline/ollama/
+offline/python/
+offline/models/
+offline/MANIFEST.json
+*.part
+._*
+.DS_Store

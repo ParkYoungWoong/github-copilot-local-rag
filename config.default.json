@@ -1,0 +1,8 @@
+{
+  "embed_model": "qwen3-embedding:0.6b",
+  "ollama_url": "http://127.0.0.1:11434",
+  "num_ctx": 4096,
+  "keep_alive": "30m",
+  "query_instruction": "Given a question, retrieve passages from internal documents that answer the question",
+  "embed_chunks_per_sec": 5.0
+}

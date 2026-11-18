@@ -1,0 +1,5 @@
+*.cmd text eol=crlf
+bin/rag text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.whl binary
