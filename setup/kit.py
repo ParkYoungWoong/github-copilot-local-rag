@@ -39,7 +39,11 @@ DEFAULT_CONFIG_FILE = KIT / "config.default.json"
 INDEX_DIR = KIT / "indexes"
 BACKUP_DIR = KIT / "backup"
 MODELS_FILE = KIT / "models.json"
-FALLBACK_MODEL = "qwen3-embedding:0.6b"
+FALLBACK_MODEL = "embeddinggemma:300m"
+# 예전 키트의 기본 모델. 이 모델을 직접 고르지 않고 기본으로 쓰던 PC는 다시 설치할 때 새 기본으로 바꾼다.
+OLD_DEFAULT_MODELS = {"qwen3-embedding:0.6b"}
+# 모델마다 필요한 Ollama 최소 버전(모델 카드 기준)
+MIN_OLLAMA = {"embeddinggemma:300m": (0, 11, 10)}
 PROGRESS_PAGE = KIT / "progress.html"
 SQLITE_VEC_VERSION = "0.1.9"
 PYTHON_WINDOWS_VERSION = "3.14.10"
@@ -573,6 +577,37 @@ def default_model():
     return model_catalog()[1]
 
 
+def ollama_supports(model):
+    """지금 켜져 있는 Ollama가 이 모델을 쓸 수 있는 버전인지. 버전을 모르면(꺼져 있음, 새로 설치함) 쓸 수 있다고 본다."""
+    need, version = MIN_OLLAMA.get(model), ollama_running()
+    if not need or not version:
+        return True
+    numbers = tuple(int(part) for part in re.findall(r"\d+", version)[:3])
+    return numbers >= need
+
+
+def install_default_model():
+    """설치할 때 쓸 기본 모델(--model이 없을 때).
+
+    예전 키트의 기본(Qwen3)을 그대로 쓰던 PC는 새 기본(models.json)으로 바꾼다. 직접 고른 모델이거나,
+    새 기본 모델을 받을 방법이 없으면(이 PC의 Ollama에도, 반입 파일에도 없고 인터넷도 안 됨) 그대로 둔다.
+    기존 컬렉션은 만들 때의 모델을 그대로 쓰므로 영향이 없다.
+    """
+    current = default_model()
+    config = load_json(CONFIG_FILE) or {}
+    new = model_catalog()[1]
+    if not ollama_supports(new):
+        # 이 PC의 Ollama가 오래돼 새 기본 모델을 못 쓰면 예전 기본을 쓴다.
+        return current if current != new else sorted(OLD_DEFAULT_MODELS)[0]
+    if (current == new or not config.get("embed_model") or config.get("embed_model_chosen")
+            or current not in OLD_DEFAULT_MODELS):
+        return current
+    if (new in (ollama_models() or []) or model_files(OFFLINE / "models", new)
+            or internet_ok("https://registry.ollama.ai/v2/")):
+        return new
+    return current
+
+
 def model_label(model):
     entry = catalog_entry(model)
     return f"{model}({entry['maker']}, {entry['country']}, 약 {entry['size_mb']}MB)" if entry else model
@@ -681,6 +716,9 @@ def pull_model(model):
                 if item.get("error"):
                     if "file does not exist" in item["error"] or "not found" in item["error"]:
                         raise KitError(f"모델 저장소에 {model} 모델이 없습니다. 이름이 맞는지 `rag models`의 목록과 비교해 보세요.")
+                    if "newer version" in item["error"]:
+                        raise KitError(f"이 PC의 Ollama(버전 {ollama_running()})가 오래돼 {model} 모델을 쓸 수 없습니다(모델 저장소에 없음이 아님). "
+                                       f"Ollama를 새 버전으로 바꾸거나, 설치라면 --model qwen3-embedding:0.6b를 붙여 다시 실행하세요.")
                     raise KitError(f"{model} 모델을 받지 못했습니다: {item['error']}")
                 total, done = item.get("total"), item.get("completed")
                 if total and done and PROGRESS:
@@ -702,7 +740,7 @@ def ensure_model(model):
     try:
         pull_model(model)
     except KitError as error:
-        if "모델 저장소에" in str(error):  # 이름이 틀림
+        if "모델 저장소에" in str(error):  # 이름이 틀림, 또는 Ollama가 오래됨
             raise
         # 회사 프록시처럼 Ollama는 못 쓰고 키트(시스템 프록시 설정을 따름)는 쓰는 망: 키트가 직접 받아 반입 파일처럼 넣는다.
         note(f"Ollama가 모델을 받지 못해 키트가 직접 받습니다({error}).")
@@ -770,8 +808,8 @@ def measure_speed(config, model):
             raise KitError(f"{model} 모델로 속도를 재지 못했습니다({error}). Ollama가 켜져 있는지 확인하세요.") from error
 
 
-def write_config(model=None, measure=()):
-    """config.json을 만든다. 기본 모델과, 잰 모델마다의 속도를 저장한다."""
+def write_config(model=None, measure=(), chosen=False):
+    """config.json을 만든다. 기본 모델과, 잰 모델마다의 속도를 저장한다. chosen은 사용자가 기본 모델을 직접 골랐는지."""
     config = load_json(DEFAULT_CONFIG_FILE)
     if not config:
         raise KitError("config.default.json이 없습니다. 키트를 다시 받으세요.")
@@ -779,6 +817,8 @@ def write_config(model=None, measure=()):
     if current.get("ollama_url"):
         config["ollama_url"] = current["ollama_url"]
     config["embed_model"] = model or current.get("embed_model") or model_catalog()[1]
+    config["embed_model_chosen"] = bool(chosen) or bool(current.get("embed_model_chosen")
+                                                         and current.get("embed_model") == config["embed_model"])
     speeds = dict(current.get("model_speeds") or {})
     results = {}
     for name in dict.fromkeys([config["embed_model"], *measure]):
@@ -2026,28 +2066,36 @@ def command_install(args):
     problem = python_problem()
     if problem:
         raise KitError(problem)
-    model = normalize_model(args.model) or None
-    if model and not catalog_entry(model):
-        say(f"참고: {model}은 models.json 목록에 없는 모델입니다. 질문과 문서 형식 없이 씁니다.")
+    explicit = normalize_model(args.model) or None
+    if explicit and not catalog_entry(explicit):
+        say(f"참고: {explicit}은 models.json 목록에 없는 모델입니다. 질문과 문서 형식 없이 씁니다.")
+    model = explicit or install_default_model()
     if not args.yes:
         say("설치 계획(아직 아무것도 바꾸지 않았습니다)")
         for number, (name, action, changes_pc) in enumerate(install_plan(model), 1):
             say(f"{number}. {name}: {action}" + (" [PC 설정 변경]" if changes_pc else ""))
         say("")
-        say(f"기본 임베딩 모델: {model_label(model or default_model())}. 다른 모델 후보는 `{command_line(sys.executable, Path(__file__), 'models')}`로 볼 수 있고, "
+        before = default_model()
+        if not explicit and not ollama_supports(model_catalog()[1]):
+            say(f"참고: 이 PC의 Ollama(버전 {ollama_running()})가 오래돼 키트의 기본 모델({model_catalog()[1]}) 대신 {model}을 씁니다. "
+                "Ollama를 새 버전으로 바꾼 뒤 다시 설치하면 기본 모델로 바뀝니다.")
+        elif not explicit and model != before:
+            say(f"기본 모델 바뀜: {before} -> {model}(키트의 새 기본, 검색 품질은 비슷하고 색인이 빠름). "
+                f"새로 만드는 컬렉션부터 쓰고, 기존 컬렉션은 만들 때의 모델을 그대로 씁니다. 그대로 두려면 install에 --model {before}를 붙입니다.")
+        say(f"기본 임베딩 모델: {model_label(model)}. 다른 모델 후보는 `{command_line(sys.executable, Path(__file__), 'models')}`로 볼 수 있고, "
             "고르면 install에 --model <모델>을 붙입니다.")
         say("진행하려면 같은 명령에 --yes를 붙여 실행하세요. 자동 승인 규칙을 넣지 않으려면 --no-auto-approve를 함께 붙이세요.")
         return 0
     begin("로컬 RAG 설치", INSTALL_STEPS, args)
     try:
-        install_steps(args, model)
+        install_steps(args, model, explicit=bool(explicit))
     except BaseException as error:
         end(False, str(error) if isinstance(error, KitError) else "중간에 멈췄습니다.")
         raise
     return 0
 
 
-def install_steps(args, model):
+def install_steps(args, model, explicit=False):
     previous = previous_kits()  # PATH와 스킬을 새 폴더로 바꾸기 전에 예전 키트 폴더를 기억해 둔다.
     claude = claude_installed()  # 스킬 단계가 ~/.claude를 만들기 전에 판단한다(계획과 같게).
     start(0)
@@ -2068,7 +2116,7 @@ def install_steps(args, model):
         note(f"{model_label(name)}: {ensure_model(name)}")
     finish(", ".join(needed_models(model)))
     start(3)
-    chosen, results = write_config(model or default_model())
+    chosen, results = write_config(model or default_model(), chosen=explicit)
     speed, dimension = results[chosen]
     finish(f"기본 모델 {chosen}, 초당 {speed}개 조각, 벡터 {dimension}차원")
     note(f"기본 모델 {chosen}: 초당 {speed}개 조각, 벡터 {dimension}차원")
@@ -2144,7 +2192,8 @@ def command_add_model(args):
     config = load_json(CONFIG_FILE)
     if not config:
         raise KitError("config.json이 없습니다. 키트 폴더에서 '설치해 줘'로 먼저 설치하세요.")
-    chosen, results = write_config(model if args.default else config.get("embed_model"), measure=[model])
+    chosen, results = write_config(model if args.default else config.get("embed_model"), measure=[model],
+                                   chosen=args.default)
     speed, dimension = results[model]
     say(f"속도: 초당 {speed}개 조각, 벡터 {dimension}차원")
     if args.default:

@@ -22,16 +22,15 @@
    - 스크립트가 막히면 https://ollama.com/download 에서 설치 파일을 받아 내가 직접 설치하도록 안내해.
    - 설치 직후에는 터미널에 PATH가 반영되지 않았을 수 있어. `ollama`를 찾지 못하면 설치 경로의 전체 경로로 실행해(Windows: `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`).
 4. Ollama가 `http://127.0.0.1:11434`에서 응답하는지 확인해. 응답이 없으면 터미널에서 `ollama serve`를 실행하지 말고, Ollama 앱을 실행하라고 안내해(Windows는 시작 메뉴, macOS는 `open -a Ollama`).
-5. `qwen3-embedding:0.6b` 모델이 없으면 `ollama pull`로 받아. 태그 없는 `qwen3-embedding`은 8B 모델(4.7GB)이라 받지 마.
+5. `embeddinggemma:300m` 모델이 없으면 `ollama pull`로 받아. 이 모델은 Ollama 0.11.10 이상에서만 쓸 수 있으니, Ollama가 그보다 오래됐으면 새 버전으로 업데이트하라고 안내하고 멈춰.
 
 ## 설정 파일
 
 6. `config.json`을 만들어 줘. 항목은 다음과 같아.
-   - `embed_model`: `"qwen3-embedding:0.6b"`
+   - `embed_model`: `"embeddinggemma:300m"`
    - `ollama_url`: `"http://127.0.0.1:11434"`
    - `num_ctx`: `4096` (모델이 쓰는 메모리를 정하는 값이라, 모든 호출에 같은 값을 넣어야 해)
    - `keep_alive`: `"30m"`
-   - `query_instruction`: `"Given a question, retrieve passages from internal documents that answer the question"`
    - `embed_chunks_per_sec`: 7번에서 잰 값
 
 ## 점검

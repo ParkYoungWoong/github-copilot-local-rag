@@ -44,7 +44,7 @@ GitHub Copilot(VS Code, Copilot CLI), Claude Code, Codex처럼 스킬과 `AGENTS
 | 검색할 때 자동 갱신 끄기 | `/local-rag [컬렉션] 컬렉션은 질문할 때 자동 갱신하지 않게 해 줘` |
 | 컬렉션 지우기(원본 문서는 그대로) | `/local-rag docs 컬렉션 지워 줘` |
 | 쓸 수 있는 임베딩 모델 보기 | `/local-rag 어떤 모델을 쓸 수 있어?` |
-| 다른 모델로 만들기 | `/local-rag wiki 폴더를 Google 모델로 RAG 만들어 줘` |
+| 다른 모델로 만들기 | `/local-rag wiki 폴더를 Qwen3 모델로 RAG 만들어 줘` |
 
 컬렉션 이름은 '프로젝트-폴더-해시' 모양(예: `memo1-wiki-3f9a`)으로 정해집니다. 해시는 폴더 경로로 만들어서, 다른 프로젝트에 같은 이름의 `docs` 폴더가 있어도 겹치지 않습니다.
 문서를 몇 개 고친 정도는 갱신을 따로 요청하지 않아도 질문할 때 반영됩니다. 바뀐 파일만 다시 처리하므로 오래 걸리지 않습니다.
@@ -52,15 +52,15 @@ GitHub Copilot(VS Code, Copilot CLI), Claude Code, Codex처럼 스킬과 `AGENTS
 
 ## 임베딩 모델
 
-기본은 Qwen3 Embedding(Alibaba, 중국)입니다. 회사 규정상 중국 모델을 쓸 수 없으면 설치할 때 "Google 모델로 설치해 줘"처럼 요청하거나, 설치한 뒤에 `/local-rag Google 모델로 바꿔 줘`라고 요청합니다.
+기본은 Google의 EmbeddingGemma입니다. 검색 품질은 다른 후보와 비슷하고 색인이 가장 빠릅니다. 다른 모델을 쓰려면 설치할 때 "Qwen3 모델로 설치해 줘"처럼 요청하거나, 설치한 뒤에 `/local-rag Qwen3 모델로 바꿔 줘`라고 요청합니다.
 
 | 모델 | 만든 곳 | 크기 | 검색 품질(MRR@5) | 색인 속도 | 메모 |
 | --- | --- | --- | --- | --- | --- |
-| `qwen3-embedding:0.6b` | Alibaba(중국) | 약 640MB | 0.900 | 기준 | 기본. 한 조각에 32K 토큰까지 받아 긴 문서도 잘리지 않음. Apache-2.0 |
-| `embeddinggemma:300m` | Google(미국) | 약 620MB | 0.955 | Windows 약 9배, Mac 약 2.5배 빠름 | 중국 모델 대신 먼저 고를 대안. 한 조각에 2K 토큰까지(키트의 1,000자 조각은 충분). 라이선스는 Gemma 이용 약관 |
-| `snowflake-arctic-embed2:568m` | Snowflake(미국) | 약 1.2GB | 0.934 | Mac 약 1.5배 빠름 | 바탕 모델은 중국 BAAI의 bge-m3. Apache-2.0 |
+| `embeddinggemma:300m` | Google(미국) | 약 620MB | 0.955 | Qwen3보다 Windows 약 5~9배, Mac 약 2.5배 빠름 | 기본. 한 조각에 2K 토큰까지(키트의 1,000자 조각은 충분). 라이선스는 Gemma 이용 약관, Ollama 0.11.10 이상 |
+| `qwen3-embedding:0.6b` | Alibaba(중국) | 약 640MB | 0.900 | 기준 | 이전 기본. 한 조각에 32K 토큰까지 받아 긴 문서도 잘리지 않음. Apache-2.0 |
+| `snowflake-arctic-embed2:568m` | Snowflake(미국) | 약 1.2GB | 0.934 | Qwen3보다 Mac 약 1.5배 빠름 | 바탕 모델은 중국 BAAI의 bge-m3. Apache-2.0 |
 
-검색 품질은 한국어 문서 18개와 질문 43개로 잰 결과입니다. 질문 하나가 약 0.02점이라, 세 모델의 차이는 질문 한두 개 차이(Gemma가 6개를 더 맞히고 2개를 더 틀림)여서 비슷한 수준으로 봅니다. 색인 속도는 키트 시험 PC(GitHub의 x64 Windows: 초당 0.27개와 2.47개 조각, Mac)에서 잰 값이며 PC마다 다릅니다.
+검색 품질은 한국어 문서 18개와 질문 43개로 잰 결과입니다. 질문 하나가 약 0.02점이라, 세 모델의 차이는 질문 한두 개 차이(Gemma가 6개를 더 맞히고 2개를 더 틀림)여서 비슷한 수준으로 봅니다. 색인 속도는 키트 시험 PC(GitHub의 x64 Windows에서 Qwen3는 초당 0.16~0.31개, Gemma는 1.4~2.5개 조각, Mac)에서 잰 값이며 PC마다 다릅니다.
 컬렉션은 만들 때 쓴 모델로 검색하므로, 컬렉션마다 모델이 달라도 됩니다.
 
 ## 사내망으로 가져가기
@@ -86,6 +86,8 @@ GitHub Copilot(VS Code, Copilot CLI), Claude Code, Codex처럼 스킬과 `AGENTS
 | ZIP | 새 ZIP을 받아 홈 폴더의 다른 폴더에 풀고 그 폴더에서 설치합니다. 예전 폴더의 색인은 새 폴더로 가져오며, 확인이 끝나면 예전 폴더는 지워도 됩니다. |
 
 직접 새 ZIP을 받았다면, 압축을 푼 폴더를 열고 `설치해 줘`라고 요청해도 같습니다.
+
+예전 기본 모델(Qwen3)을 그대로 쓰던 PC는 다시 설치할 때 기본 모델이 EmbeddingGemma로 바뀝니다(설치 계획에 "기본 모델 바뀜"으로 나옴). 새로 만드는 컬렉션부터 쓰고, 기존 컬렉션은 Qwen3 그대로 씁니다. 직접 Qwen3를 골랐던 PC나 Ollama가 0.11.10보다 오래된 PC는 바꾸지 않습니다.
 
 ## 설치되는 것
 

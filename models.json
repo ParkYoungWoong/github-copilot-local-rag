@@ -1,18 +1,6 @@
 {
-  "default": "qwen3-embedding:0.6b",
+  "default": "embeddinggemma:300m",
   "models": [
-    {
-      "name": "qwen3-embedding:0.6b",
-      "label": "Qwen3 Embedding 0.6B",
-      "maker": "Alibaba",
-      "country": "중국",
-      "license": "Apache-2.0",
-      "size_mb": 639,
-      "dimension": 1024,
-      "note": "기본 모델입니다. 긴 문서(최대 32K 토큰)도 잘리지 않습니다.",
-      "query": "Instruct: {instruction}\nQuery: {question}",
-      "document": "{title}\n{text}"
-    },
     {
       "name": "embeddinggemma:300m",
       "label": "EmbeddingGemma 300M",
@@ -21,9 +9,21 @@
       "license": "Gemma Terms of Use",
       "size_mb": 622,
       "dimension": 768,
-      "note": "중국 모델을 쓸 수 없을 때 먼저 고를 대안입니다. 키트의 한국어 시험에서 기본 모델과 비슷한 검색 품질이었고, 색인은 Windows에서 약 9배, Mac에서 약 2.5배 빨랐습니다(PC마다 다름). 라이선스는 Gemma 이용 약관입니다.",
+      "note": "기본 모델입니다. 키트의 한국어 시험에서 Qwen3와 비슷한 검색 품질이었고, 색인은 Windows에서 약 5~9배, Mac에서 약 2.5배 빨랐습니다(PC마다 다름). 한 조각에 2K 토큰까지 받으며 키트의 1,000자 조각에는 충분합니다. 라이선스는 Gemma 이용 약관이고, Ollama 0.11.10 이상이 필요합니다.",
       "query": "task: search result | query: {question}",
       "document": "title: {title} | text: {text}"
+    },
+    {
+      "name": "qwen3-embedding:0.6b",
+      "label": "Qwen3 Embedding 0.6B",
+      "maker": "Alibaba",
+      "country": "중국",
+      "license": "Apache-2.0",
+      "size_mb": 639,
+      "dimension": 1024,
+      "note": "이전 기본 모델이라 업데이트 전에 만든 컬렉션은 이 모델을 씁니다. 라이선스가 Apache-2.0이고, 한 조각에 32K 토큰까지 받아 긴 문서도 잘리지 않습니다. 색인은 기본 모델보다 느립니다.",
+      "query": "Instruct: {instruction}\nQuery: {question}",
+      "document": "{title}\n{text}"
     },
     {
       "name": "snowflake-arctic-embed2:568m",
