@@ -39,7 +39,8 @@ DEFAULT_EXTENSIONS = {".md", ".markdown", ".txt"}
 MAX_FILE_SIZE = 1024 * 1024
 MAX_CHUNK_SIZE = 1000
 EMBED_BATCH_SIZE = 16
-AUTO_REFRESH_LIMIT_SECONDS = 20
+# 자체 시험만 RAG_AUTO_REFRESH_LIMIT로 한도를 바꾼다(느린 PC에서도 같은 결과가 나오도록).
+AUTO_REFRESH_LIMIT_SECONDS = int(os.environ.get("RAG_AUTO_REFRESH_LIMIT") or 20)
 NAME_PATTERN = re.compile(r"^[a-z0-9가-힣-]+$")
 HEADING_PATTERN = re.compile(r"^(#{1,3})\s+(.+?)\s*#*\s*$")
 CONFIG_KEYS = ("embed_model", "ollama_url", "num_ctx", "keep_alive", "query_instruction", "embed_chunks_per_sec")

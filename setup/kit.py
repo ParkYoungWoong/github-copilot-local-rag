@@ -312,7 +312,7 @@ def python_problem(executable=None):
         if not hasattr(connection, "enable_load_extension"):
             if IS_MAC:
                 return ("이 Python은 SQLite 확장 불러오기를 지원하지 않습니다(macOS 기본 Python이나 일부 설치 도구로 만든 Python). "
-                        "Homebrew나 python.org의 Python으로 다시 실행하세요.")
+                        "Homebrew Python(brew install python)으로 다시 실행하세요. python.org의 macOS용 Python도 확장을 불러오지 못합니다.")
             return "이 Python은 SQLite 확장 불러오기를 지원하지 않습니다. python.org의 Python으로 다시 실행하세요."
     finally:
         connection.close()
@@ -417,6 +417,39 @@ def start_ollama_app(app):
         subprocess.run(["open", str(app)], check=False)
 
 
+def start_ollama_server(app):
+    """macOS: 앱이 확인 창에서 멈춰 있으면 앱을 닫고 앱 안의 Ollama 서버를 바로 실행한다.
+
+    Ollama 앱은 처음 실행할 때 서버를 띄우기 전에 'Move to Applications?' 창(응용 프로그램 폴더 밖일 때)과
+    명령줄 도구 설치용 암호 창을 띄우고 답을 기다린다. AI 도구에서 설치하면 이 창을 못 보고 멈출 수 있다.
+    """
+    binary = app / "Contents" / "Resources" / "ollama"
+    if not IS_MAC or not binary.is_file():
+        return False
+    subprocess.run(["pkill", "-f", str(app / "Contents" / "MacOS")], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log = home() / ".ollama" / "logs" / "local-rag-serve.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "ab") as out:
+        subprocess.Popen([str(binary), "serve"], stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                         start_new_session=True, close_fds=True)
+    return True
+
+
+def bring_up_ollama(app, seconds):
+    """Ollama 앱을 실행하고 응답할 때까지 기다린다. macOS에서 앱이 확인 창에서 멈추면 서버를 바로 실행한다."""
+    start_ollama_app(app)
+    if IS_MAC:
+        if wait_for(ollama_running, 30):
+            return True
+        if start_ollama_server(app):
+            note("Ollama 앱이 확인 창에서 멈춰 있어 앱 대신 Ollama 서버를 바로 실행했습니다. "
+                 "PC를 다시 켠 뒤에는 응용 프로그램 폴더에서 Ollama를 한 번 실행하세요.")
+            return wait_for(ollama_running, 30)
+        return False
+    return wait_for(ollama_running, seconds)
+
+
 def offline_file(relative):
     path = OFFLINE / relative
     return path if path.is_file() and path.stat().st_size > 0 else None
@@ -447,7 +480,8 @@ def install_ollama():
             raise KitError(f"Ollama 설치 파일이 오류로 끝났습니다(종료 코드 {process.returncode}). "
                            f"파일 탐색기에서 {installer}를 직접 실행해 설치한 뒤 다시 요청하세요.")
     else:
-        target = home() / "Applications"
+        # 응용 프로그램 폴더에 쓸 수 있으면 그곳에 둔다. 다른 곳에 두면 Ollama가 실행할 때마다 옮길지 묻는다.
+        target = Path("/Applications") if os.access("/Applications", os.W_OK) else home() / "Applications"
         target.mkdir(exist_ok=True)
         say(f"  Ollama 앱을 {target}에 풉니다(관리자 권한 없이).")
         subprocess.run(["ditto", "-x", "-k", str(installer), str(target)], check=True)
@@ -455,9 +489,7 @@ def install_ollama():
     app = find_ollama_app()
     if app is None:
         raise KitError("Ollama를 설치했지만 앱을 찾지 못했습니다. 직접 설치 파일을 실행한 뒤 다시 요청하세요.")
-    if not wait_for(ollama_running, 20):
-        start_ollama_app(app)
-    if not wait_for(ollama_running, 90):
+    if not wait_for(ollama_running, 20) and not bring_up_ollama(app, 90):
         raise KitError("Ollama 앱이 응답하지 않습니다. Windows는 시작 메뉴, macOS는 응용 프로그램에서 Ollama를 실행한 뒤 다시 요청하세요.")
 
 
@@ -1955,8 +1987,7 @@ def install_steps(args, model):
         app = find_ollama_app()
         if app:
             note("Ollama 앱을 실행합니다.")
-            start_ollama_app(app)
-            if not wait_for(ollama_running, 60):
+            if not bring_up_ollama(app, 60):
                 raise KitError("Ollama 앱이 응답하지 않습니다. 앱을 직접 실행한 뒤 다시 요청하세요.")
         else:
             install_ollama()
@@ -2031,8 +2062,7 @@ def command_add_model(args):
         app = find_ollama_app()
         if not app:
             raise KitError("Ollama가 없습니다. 키트 폴더에서 '설치해 줘'로 먼저 설치하세요.")
-        start_ollama_app(app)
-        if not wait_for(ollama_running, 60):
+        if not bring_up_ollama(app, 60):
             raise KitError("Ollama 앱이 응답하지 않습니다. 앱을 직접 실행한 뒤 다시 요청하세요.")
     if not catalog_entry(model):
         say(f"참고: {model}은 models.json 목록에 없는 모델입니다. 질문과 문서 형식 없이 씁니다.")

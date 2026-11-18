@@ -37,7 +37,8 @@ def write(path, text):
 
 class Runner:
     def __init__(self, index_dir):
-        self.env = dict(os.environ, RAG_INDEX_DIR=str(index_dir))
+        # 느린 PC에서는 예상 시간이 20초를 넘어 자동 갱신을 건너뛰므로, 시험에서는 한도를 크게 둔다.
+        self.env = dict(os.environ, RAG_INDEX_DIR=str(index_dir), RAG_AUTO_REFRESH_LIMIT="100000")
 
     def __call__(self, *args):
         result = subprocess.run([str(LAUNCHER), *args], env=self.env, capture_output=True, encoding="utf-8", errors="replace")
