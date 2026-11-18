@@ -418,36 +418,49 @@ def start_ollama_app(app):
 
 
 def start_ollama_server(app):
-    """macOS: 앱이 확인 창에서 멈춰 있으면 앱을 닫고 앱 안의 Ollama 서버를 바로 실행한다.
+    """앱 대신 Ollama 서버를 바로 실행한다(앱이 응답하지 않을 때만).
 
-    Ollama 앱은 처음 실행할 때 서버를 띄우기 전에 'Move to Applications?' 창(응용 프로그램 폴더 밖일 때)과
-    명령줄 도구 설치용 암호 창을 띄우고 답을 기다린다. AI 도구에서 설치하면 이 창을 못 보고 멈출 수 있다.
+    macOS: Ollama 앱은 처음 실행할 때 서버를 띄우기 전에 'Move to Applications?' 창(응용 프로그램 폴더 밖일 때)과
+    명령줄 도구 설치용 암호 창을 띄우고 답을 기다린다. AI 도구에서 설치하면 이 창을 못 보고 멈출 수 있어 앱을 닫는다.
+    Windows: 보안 프로그램이나 화면 없는 세션 때문에 트레이 앱이 뜨지 않으면 같은 폴더의 ollama.exe를 쓴다.
+    나중에 Ollama 앱을 실행하면 앱이 이 서버를 끄고 자기 서버로 바꾼다.
     """
-    binary = app / "Contents" / "Resources" / "ollama"
-    if not IS_MAC or not binary.is_file():
+    if IS_MAC:
+        binary = app / "Contents" / "Resources" / "ollama"
+    elif IS_WINDOWS:
+        binary = app.parent / "ollama.exe"
+    else:
         return False
-    subprocess.run(["pkill", "-f", str(app / "Contents" / "MacOS")], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not binary.is_file():
+        return False
     log = home() / ".ollama" / "logs" / "local-rag-serve.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "ab") as out:
-        subprocess.Popen([str(binary), "serve"], stdin=subprocess.DEVNULL, stdout=out, stderr=out,
-                         start_new_session=True, close_fds=True)
+        if IS_MAC:
+            subprocess.run(["pkill", "-f", str(app / "Contents" / "MacOS")], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([str(binary), "serve"], stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                             start_new_session=True, close_fds=True)
+        else:
+            flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+            subprocess.Popen([str(binary), "serve"], stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                             creationflags=flags, close_fds=True)
     return True
 
 
 def bring_up_ollama(app, seconds):
-    """Ollama 앱을 실행하고 응답할 때까지 기다린다. macOS에서 앱이 확인 창에서 멈추면 서버를 바로 실행한다."""
+    """Ollama 앱을 실행하고 응답할 때까지 기다린다. 앱이 응답하지 않으면 서버를 바로 실행한다."""
     start_ollama_app(app)
-    if IS_MAC:
-        if wait_for(ollama_running, 60):  # 사용자가 확인 창에 답할 시간
-            return True
-        if start_ollama_server(app):
-            note("Ollama 앱이 확인 창에서 멈춰 있어 앱 대신 Ollama 서버를 바로 실행했습니다. "
-                 "PC를 다시 켠 뒤에는 응용 프로그램 폴더에서 Ollama를 한 번 실행하세요.")
-            return wait_for(ollama_running, 30)
-        return False
-    return wait_for(ollama_running, seconds)
+    # macOS는 사용자가 확인 창에 답할 시간으로 60초
+    if wait_for(ollama_running, 60 if IS_MAC else seconds):
+        return True
+    if start_ollama_server(app):
+        where = "응용 프로그램 폴더" if IS_MAC else "시작 메뉴"
+        reason = "확인 창에서 멈춰 있어" if IS_MAC else "응답하지 않아"
+        note(f"Ollama 앱이 {reason} 앱 대신 Ollama 서버를 바로 실행했습니다. "
+             f"PC를 다시 켠 뒤에는 {where}에서 Ollama를 한 번 실행하세요.")
+        return wait_for(ollama_running, 30)
+    return False
 
 
 def offline_file(relative):
