@@ -42,7 +42,7 @@ GitHub Copilot, Claude Code, Codex 등 어느 AI 도구에서 열어도 이 문�
 - macOS
   1. `python3.14`, `python3.13`, `python3.12`, `python3.11`, `python3.10`
   2. `/opt/homebrew/bin/python3`, `/usr/local/bin/python3`
-  3. `python3`. macOS 기본 Python(`/usr/bin/python3`), python.org의 macOS용 Python, 일부 설치 도구(pyenv 등)로 만든 Python은 SQLite 확장을 불러오지 못해서 `kit.py`가 알려 줍니다. 그러면 위 목록의 다른 Python으로 다시 실행하고, 모두 안 되면 Homebrew Python(`brew install python`)을 설치하라고 안내하고 멈춥니다.
+  3. `python3`. macOS 기본 Python(`/usr/bin/python3`), python.org의 macOS용 Python, 일부 설치 도구로 만든 Python(GitHub Actions의 setup-python 등)은 SQLite 확장을 불러오지 못해서 `kit.py`가 알려 줍니다. 그러면 위 목록의 다른 Python으로 다시 실행하고, 모두 안 되면 Homebrew Python(`brew install python`)을 설치하라고 안내하고 멈춥니다.
 
 ## 설치
 

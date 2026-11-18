@@ -440,7 +440,7 @@ def bring_up_ollama(app, seconds):
     """Ollama 앱을 실행하고 응답할 때까지 기다린다. macOS에서 앱이 확인 창에서 멈추면 서버를 바로 실행한다."""
     start_ollama_app(app)
     if IS_MAC:
-        if wait_for(ollama_running, 30):
+        if wait_for(ollama_running, 60):  # 사용자가 확인 창에 답할 시간
             return True
         if start_ollama_server(app):
             note("Ollama 앱이 확인 창에서 멈춰 있어 앱 대신 Ollama 서버를 바로 실행했습니다. "
