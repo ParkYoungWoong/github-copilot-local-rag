@@ -67,7 +67,7 @@ python setup/kit.py uninstall [--yes]
 | `copy-to` | `.venv`, `config.json`, 색인(`--with-indexes`가 없으면), 임시 파일을 빼고 복사 |
 | `uninstall` | PATH, `RAG_HOME`, 바로 쓰는 실행 파일, 세 곳의 스킬을 지움. Ollama, 모델, 색인, 자동 승인 규칙은 남김 |
 
-`install --yes`, `pack`, `prepare`, `copy-to`, `add-model`도 `rag index`처럼 한 번에 하나만 돌고, 다시 실행하면 진행 중인 작업에 이어 붙습니다(기록은 `.jobs/`). `install --yes`는 같은 설치가 10분 안에 성공으로 끝났고 키트 파일이 그대로면 다시 하지 않고 그 결과를 보여 줍니다.
+`install --yes`, `pack`, `prepare`, `copy-to`, `add-model`도 `rag index`처럼 한 번에 하나만 돌고, 다시 실행하면 진행 중인 작업에 이어 붙습니다(기록은 `.jobs/`). `install --yes`는 같은 설치가 10분 안에 성공으로 끝났고, 키트 파일이 그대로이며, `check`에 실패가 없으면 다시 하지 않고 그 결과를 보여 줍니다. `uninstall --yes`는 이 기록도 지웁니다.
 
 PC 설정을 바꾸는 곳:
 

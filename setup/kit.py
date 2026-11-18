@@ -448,22 +448,22 @@ def start_ollama_server(app):
     return True
 
 
-def ollama_log_tail(lines=6):
-    """Ollama가 켜지지 않을 때 원인을 볼 수 있게 서버 기록의 마지막 몇 줄을 돌려준다."""
-    folder = home() / ".ollama" / "logs"
+def ollama_log_tail(lines=4):
+    """Ollama가 켜지지 않을 때 원인을 볼 수 있게, 가장 최근 Ollama 기록에서 오류 줄(없으면 마지막 줄)을 돌려준다."""
+    folders = [home() / ".ollama" / "logs"]
     if IS_WINDOWS:
-        folder = Path(os.environ.get("LOCALAPPDATA", "")) / "Ollama"
-    found = []
-    for name in ("local-rag-serve.log", "server.log", "app.log"):
-        for path in (folder / name, home() / ".ollama" / "logs" / name):
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-            except OSError:
-                continue
-            if text:
-                found.append(f"[{path}] " + " / ".join(line.strip() for line in text[-lines:]))
-            break
-    return " ".join(found)
+        folders.insert(0, Path(os.environ.get("LOCALAPPDATA", "")) / "Ollama")
+    logs = [folder / name for folder in folders for name in ("server.log", "app.log", "local-rag-serve.log")]
+    logs = sorted((path for path in logs if path.is_file()), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not logs:
+        return ""
+    try:
+        text = logs[0].read_text(encoding="utf-8", errors="replace").splitlines()[-60:]
+    except OSError:
+        return ""
+    errors = [line for line in text if re.search(r"level=(ERROR|WARN)|error|panic|failed|denied", line, re.I)]
+    picked = (errors or text)[-lines:]
+    return f"[{logs[0]}] " + " / ".join(line.strip()[:200] for line in picked)
 
 
 def ollama_failed(action):
@@ -760,7 +760,7 @@ def measure_speed(config, model):
                 detail = ""
             if attempt < 2:
                 # 막 받은 모델은 처음 불러올 때 실패하기도 한다. 잠깐 뒤 다시 한다.
-                note(f"Ollama가 오류 {error.code}를 돌려줘 10초 뒤 다시 잽니다. {detail}")
+                note(f"Ollama 오류({error.code})가 나서 10초 뒤 다시 잽니다. {detail}")
                 time.sleep(10)
                 continue
             raise KitError(f"{model} 모델로 임베딩하지 못했습니다(Ollama 오류 {error.code}: {detail}). "

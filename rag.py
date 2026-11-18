@@ -1404,7 +1404,8 @@ def main(argv=None):
         args.model = normalize_model(args.model)
     if getattr(args, "k", 1) < 1:
         parser.error("-k는 1 이상이어야 합니다.")
-    if args.command == "index" and not args.dry_run and not os.environ.get("RAG_NO_JOB"):
+    # --debug는 추적 정보를 그대로 보여야 하므로 잠금 없이 바로 실행한다.
+    if args.command == "index" and not args.dry_run and not args.debug and not os.environ.get("RAG_NO_JOB"):
         key = index_job_key(args)
         if key:
             return joblock.run(JOB_DIR, key, job_signature(args), f"컬렉션 '{key}' 색인", lambda: run_command(args))
