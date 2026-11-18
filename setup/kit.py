@@ -609,6 +609,8 @@ def pull_model(model):
             for line in response:
                 item = json.loads(line.decode("utf-8") or "{}")
                 if item.get("error"):
+                    if "file does not exist" in item["error"] or "not found" in item["error"]:
+                        raise KitError(f"모델 저장소에 {model} 모델이 없습니다. 이름이 맞는지 `rag models`의 목록과 비교해 보세요.")
                     raise KitError(f"{model} 모델을 받지 못했습니다: {item['error']}")
                 total, done = item.get("total"), item.get("completed")
                 if total and done and PROGRESS:
